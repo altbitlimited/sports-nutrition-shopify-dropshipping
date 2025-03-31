@@ -107,7 +107,7 @@ def process_barcodes_for_supplier(supplier, supplier_barcodes, products, batch_s
 
                         # Log supplier link addition
                         logger.log(
-                            event="supplier_added_to_existing_product",
+                            event="supplier_added_to_product",  # Correct log for adding supplier
                             store=None,
                             level="info",
                             data={
@@ -191,16 +191,17 @@ def discover_new_products(batch_size=500):
         pruned_supplier_links = prune_supplier_links_for_supplier(supplier_name, all_barcodes)
 
         # Log the pruned supplier links
-        logger.log(
-            event="supplier_link_pruned",
-            store=None,
-            level="info",
-            data={
-                "supplier": supplier_name,
-                "pruned_supplier_links": len(pruned_supplier_links),
-                "duration": time.time() - start_time
-            }
-        )
+        if len(pruned_supplier_links) > 0:
+            logger.log(
+                event="supplier_link_pruned",
+                store=None,
+                level="info",
+                data={
+                    "supplier": supplier_name,
+                    "pruned_supplier_links": len(pruned_supplier_links),
+                    "duration": time.time() - start_time
+                }
+            )
 
     # Log overall task metrics
     logger.log(

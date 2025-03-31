@@ -1,6 +1,6 @@
 # core/MongoManager.py
 
-from pymongo import MongoClient, ASCENDING
+from pymongo import MongoClient, ASCENDING, DESCENDING
 from core.config import MONGODB_URI, MONGODB_DB_NAME
 from core.encryption import encrypt_token, decrypt_token
 
@@ -25,6 +25,20 @@ class MongoManager:
 
         # Index on suppliers.name for faster queries filtering products by supplier
         self.products.create_index([("suppliers.name", ASCENDING)], name="suppliers_name_index")
+
+        # Index on updated_at to speed up queries that involve sorting by modification date
+        self.products.create_index([("updated_at", DESCENDING)], name="updated_at_index")
+
+        # Index on barcode_lookup_status to speed up filtering by enrichment status
+        self.products.create_index([("barcode_lookup_status", ASCENDING)], name="barcode_lookup_status_index")
+
+        # Compound index on barcode and supplier.name for fast queries filtering by both
+        self.products.create_index([("barcode", ASCENDING), ("suppliers.name", ASCENDING)],
+                                   name="barcode_supplier_index")
+
+        # Index on created_at for efficient querying and sorting by product creation date
+        self.products.create_index([("created_at", DESCENDING)], name="created_at_index")
+
 
     def get_shop_by_domain(self, shop_domain):
         return self.shops.find_one({"shop": shop_domain})

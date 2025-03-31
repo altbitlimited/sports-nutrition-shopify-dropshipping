@@ -8,10 +8,15 @@
     port = "80"
 
 [[cron]]
-  name = "prune_logs"
+  name = "prune_old_logs"
   schedule = "0 0 * * *"  # Runs every day at midnight UTC
-  command = "python3 core/tasks/prune_logs.py prune_old_logs"
+  command = "python3 core/tasks/prune_old_logs.py prune_old_logs"
 [[cron]]
   name = "discover_new_products"
   schedule = "0 6 * * *"  # every day at 6:00 AM UTC
   command = "python3 core/tasks/discover_new_products.py discover_new_products"
+[[cron]]
+  name = "enrich_products_barcode_lookup"
+  schedule = "0 7 * * *"  # Every day at 7:00 AM UTC
+  command = "python3 core/tasks/enrich_products_barcode_lookup.py enrich_products_barcode_lookup"
+

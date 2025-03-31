@@ -35,6 +35,7 @@ class Products:
         product_data = {
             "barcode": barcode,
             "barcode_lookup_data": None,  # Set to None (null in MongoDB)
+            "barcode_lookup_status": "pending",
             "ai_generated_data": None,    # Set to None (null in MongoDB)
             "image_urls": None,           # Set to None (null in MongoDB)
             "suppliers": [

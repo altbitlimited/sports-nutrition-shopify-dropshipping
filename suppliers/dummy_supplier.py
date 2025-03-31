@@ -36,16 +36,16 @@ class DummySupplier(Supplier):
                 "weight": "200g",
                 "other_data": "something"
             },
-            {
-                "ean": "857640006158",
-                "name": "Dummy Product 3",
-                "stock_count": 55,
-                "price": 30.00,
-                "product_code": "XYZ125",
-                "brand": "Brand C",
-                "weight": "700g",
-                "other_data": "something"
-            },
+            # {
+            #     "ean": "857640006158",
+            #     "name": "Dummy Product 3",
+            #     "stock_count": 55,
+            #     "price": 30.00,
+            #     "product_code": "XYZ125",
+            #     "brand": "Brand C",
+            #     "weight": "700g",
+            #     "other_data": "something"
+            # },
         ]
 
         # and populate our dummy parsed data
