@@ -1,0 +1,17 @@
+[[services]]
+  internal_port = 8000  # The port your FastAPI app is running on
+  protocol = "http"
+  [services.concurrency]
+    soft_limit = 25
+    hard_limit = 40
+  [[services.ports]]
+    port = "80"
+
+[[cron]]
+  name = "prune_logs"
+  schedule = "0 0 * * *"  # Runs every day at midnight UTC
+  command = "python3 core/tasks/prune_logs.py prune_old_logs"
+[[cron]]
+  name = "discover_new_products"
+  schedule = "0 6 * * *"  # every day at 6:00 AM UTC
+  command = "python3 core/tasks/discover_new_products.py discover_new_products"

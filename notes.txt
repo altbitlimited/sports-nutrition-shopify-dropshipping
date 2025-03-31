@@ -1,0 +1,7 @@
+ngrok http --url=altbit.ngrok.io 8000
+
+uvicorn main:app --reload
+
+Test Task
+python -m core.tasks.prune_logs prune_old_logs
+python -m core.tasks.discover_new_products discover_new_products

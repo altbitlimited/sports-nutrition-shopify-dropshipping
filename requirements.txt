@@ -1,0 +1,7 @@
+ShopifyAPI==12.7.0
+requests==2.32.3
+fastapi==0.115.12
+uvicorn[standard]==0.34.0
+python-dotenv==1.1.0
+pymongo==4.11.3
+cryptography==42.0.5
