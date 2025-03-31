@@ -1,3 +1,5 @@
+# core/suppliers/base_supplier.py
+
 class Supplier:
     def __init__(self, name: str):
         self.name = name

@@ -1,4 +1,4 @@
-from datetime import datetime
+# core/suppliers/dummy_supplier.py
 
 # Inherit from the base Supplier class
 from .base_supplier import Supplier
@@ -17,7 +17,7 @@ class DummySupplier(Supplier):
         # Dummy data (mimicking supplier feed)
         self._products = [
             {
-                "ean": "123456789012",
+                "ean": "857640006424",
                 "name": "Dummy Product 1",
                 "stock_count": 100,
                 "price": 25.00,
@@ -27,7 +27,7 @@ class DummySupplier(Supplier):
                 "other_data": "something"
             },
             {
-                "ean": "123456789013",
+                "ean": "810028293847",
                 "name": "Dummy Product 2",
                 "stock_count": 10,
                 "price": 3.00,
@@ -37,7 +37,7 @@ class DummySupplier(Supplier):
                 "other_data": "something"
             },
             {
-                "ean": "123456789014",
+                "ean": "857640006158",
                 "name": "Dummy Product 3",
                 "stock_count": 55,
                 "price": 30.00,
