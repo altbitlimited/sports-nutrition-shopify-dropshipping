@@ -1,8 +1,9 @@
 # core/tasks/discover_new_products.py
 
 import sys
-from suppliers.dummy_supplier import DummySupplier
+from suppliers.dummy_supplier import DummySupplier  # Replace with real supplier imports later
 from core.MongoManager import MongoManager
+from core.product import Product
 from core.Logger import AppLogger
 
 mongo = MongoManager()
@@ -11,7 +12,7 @@ logger = AppLogger(mongo)
 def discover_new_products():
     print("🔍 Starting new product discovery...")
 
-    supplier_classes = [DummySupplier()]  # Extend with real suppliers later
+    supplier_classes = [DummySupplier()]  # Add real suppliers later
     discovery_summary = {}
 
     for supplier in supplier_classes:
@@ -33,26 +34,34 @@ def discover_new_products():
             product = mongo.db.products.find_one({"barcode": barcode})
 
             if not product:
-                # Completely new product
+                # If product doesn't exist, it's a new product
                 new_barcodes.append(barcode)
+
+                # Create Product object and add it to the database
+                product_obj = Product(barcode)
+                barcode_lookup_data = {"name": "Product Name", "description": "Product Description"}  # Example, update with actual data
+                ai_generated_data = {"title": "AI Title", "description": "AI Description"}
+                image_urls = ["https://example.com/image.jpg"]  # Replace with actual image URLs
+                suppliers = [{"name": supplier_name, "data": {}, "parsed": {}}]
+
+                product_obj.add_new_product(barcode_lookup_data, ai_generated_data, image_urls, suppliers)
             else:
-                # Product exists, check if supplier is listed
-                supplied_by = [s["name"] for s in product.get("suppliers", [])]
-                if supplier_name not in supplied_by:
-                    # Supplier isn't in the list, so we need to add it
+                # Product exists — check if this supplier is linked
+                product_obj = Product(barcode)  # Create Product instance
+                existing_suppliers = [s["name"] for s in product.get("suppliers", [])]
+
+                if supplier_name not in existing_suppliers:
+                    # Supplier isn't linked, so add it
+                    product_obj.add_supplier(
+                        supplier_name=supplier_name,
+                        supplier_data={},  # Add supplier-specific data here
+                        supplier_parsed_data={}  # Add parsed data here
+                    )
                     new_supplier_links.append(barcode)
                 else:
-                    # The product exists and the supplier is listed — check if we need to prune the link
-                    current_suppliers = product["suppliers"]
-                    current_suppliers = [s for s in current_suppliers if s["name"] != supplier_name]
-
-                    if len(current_suppliers) != len(product["suppliers"]):
-                        # Supplier was removed, so we prune the link
-                        mongo.db.products.update_one(
-                            {"barcode": barcode},
-                            {"$set": {"suppliers": current_suppliers}}
-                        )
-                        pruned_supplier_links.append(barcode)
+                    # The supplier is already linked, check for pruning
+                    product_obj.prune_supplier_link(supplier_name)  # This will prune the supplier if it’s removed
+                    pruned_supplier_links.append(barcode)
 
         print(f"➕ {len(new_barcodes)} new barcodes, 🔗 {len(new_supplier_links)} new supplier links, 🗑️ {len(pruned_supplier_links)} pruned supplier links for {supplier_name}")
 
