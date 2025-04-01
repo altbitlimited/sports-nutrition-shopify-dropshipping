@@ -1,3 +1,5 @@
+# routes/shopify_webhooks.py
+
 from fastapi import APIRouter, Request, Header, HTTPException
 from core.config import SHOPIFY_API_SECRET
 from core.MongoManager import MongoManager
@@ -32,7 +34,14 @@ async def app_uninstalled(
     raw_body = await request.body()
 
     if not verify_webhook_hmac(x_shopify_hmac_sha256, raw_body):
-        logger.log("webhook_invalid_hmac", {"raw": raw_body.decode()}, level="warn")
+        logger.log(
+            event="webhook_invalid_hmac",
+            level="warning",
+            data={
+                "message": "⚠️ Invalid HMAC received from Shopify.",
+                "raw": raw_body.decode()
+            }
+        )
         raise HTTPException(status_code=401, detail="Invalid HMAC signature")
 
     if not x_shopify_shop_domain:
@@ -40,7 +49,16 @@ async def app_uninstalled(
 
     # Clean up shop data
     mongo.shops.delete_one({"shop": x_shopify_shop_domain})
-    mongo.logs.delete_many({"store": x_shopify_shop_domain})  # ← delete logs
-    logger.log("shop_uninstalled", {"action": "shop and logs deleted"}, store=x_shopify_shop_domain)
+    mongo.logs.delete_many({"store": x_shopify_shop_domain})
+
+    logger.log(
+        event="shop_uninstalled",
+        store=x_shopify_shop_domain,
+        level="info",
+        data={
+            "message": "🗑️ Shop uninstalled. Shop and related logs deleted.",
+            "shop": x_shopify_shop_domain
+        }
+    )
 
     return {"status": "ok", "message": f"Shop {x_shopify_shop_domain} deleted"}

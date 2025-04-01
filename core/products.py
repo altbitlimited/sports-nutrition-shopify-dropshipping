@@ -31,23 +31,27 @@ class Products:
             )
             return Product(barcode)
 
-        # Insert the new product into the database with minimal data
         product_data = {
             "barcode": barcode,
-            "barcode_lookup_data": None,  # Set to None (null in MongoDB)
+            "barcode_lookup_data": None,
             "barcode_lookup_status": "pending",
-            "barcode_lookup_at": None,  # Timestamp of last lookup attempt
-            "images_status": "pending",  # Set image status to pending
-            "images_at": None,  # Timestamp of last image enrichment
-            "ai_generate_status": "pending",  # Set AI generate status to pending
-            "ai_generate_at": None,  # Timestamp of last AI enrichment
-            "ai_generated_data": None,    # Set to None (null in MongoDB)
-            "image_urls": None,           # Set to None (null in MongoDB)
+            "barcode_lookup_at": None,
+            "images_status": "pending",
+            "images_at": None,
+            "ai_generate_status": "pending",
+            "ai_generate_at": None,
+            "ai_generated_data": None,
+            "image_urls": None,
             "suppliers": [
-                {"name": supplier_data["name"], "data": supplier_data["data"], "parsed": supplier_data["parsed"]}],
-            "shops": [],  # Placeholder for shops, can be populated later
-            "created_at": datetime.utcnow(),  # Set the created_at timestamp
-            "updated_at": datetime.utcnow()   # Set the updated_at timestamp
+                {
+                    "name": supplier_data["name"],
+                    "data": supplier_data["data"],
+                    "parsed": supplier_data["parsed"]
+                }
+            ],
+            "shops": [],
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
         }
 
         self.mongo.db.products.insert_one(product_data)
@@ -55,15 +59,14 @@ class Products:
         logger.log(
             event="product_added",
             store=None,
-            level="info",
+            level="success",
             data={
                 "barcode": barcode,
-                "message": f"New product with barcode {barcode} added to the database.",
+                "message": f"✅ Product with barcode {barcode} added to the database.",
                 "supplier_count": 1
             }
         )
 
-        print(f"Product {barcode} added to database.")
         return Product(barcode)
 
     def bulk_update_products(self, product_updates):
@@ -91,7 +94,7 @@ class Products:
                 level="info",
                 data={
                     "barcode": barcode,
-                    "message": f"Product with barcode {barcode} updated in bulk."
+                    "message": f"🔄 Product {barcode} updated in bulk."
                 }
             )
 
@@ -111,6 +114,6 @@ class Products:
                 data={
                     "barcode": barcode,
                     "supplier_name": supplier_name,
-                    "message": f"Supplier {supplier_name} link pruned for product {barcode}."
+                    "message": f"🧹 Supplier {supplier_name} link pruned from product {barcode}."
                 }
             )

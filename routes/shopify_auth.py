@@ -1,3 +1,5 @@
+# routes/shopify_auth.py
+
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse
 import shopify
@@ -30,10 +32,19 @@ def install(shop: str):
     session = shopify.Session(shop, SHOPIFY_API_VERSION)
 
     redirect_uri = f"{APP_BASE_URL}/auth/shopify/callback"
-    scopes = ["read_products", "write_products"]  # Add more as needed
+    scopes = ["read_products", "write_products"]
 
     permission_url = session.create_permission_url(scopes, redirect_uri)
-    logger.log("install_redirect", {"redirect_uri": redirect_uri}, store=shop)
+    logger.log(
+        event="install_redirect",
+        level="info",
+        store=shop,
+        data={
+            "redirect_uri": redirect_uri,
+            "scopes": scopes,
+            "message": "🔗 Redirecting merchant to install screen."
+        }
+    )
 
     return RedirectResponse(permission_url)
 
@@ -56,7 +67,12 @@ def callback(request: Request):
         session = shopify.Session(shop, SHOPIFY_API_VERSION)
         token = session.request_token(params)
     except Exception as e:
-        logger.log("oauth_failed", {"error": str(e)}, store=shop, level="error")
+        logger.log(
+            event="oauth_failed",
+            level="error",
+            store=shop,
+            data={"error": str(e), "message": "❌ OAuth verification failed."}
+        )
         raise HTTPException(status_code=400, detail=f"OAuth verification failed: {str(e)}")
 
     # Activate session and fetch scopes
@@ -64,27 +80,45 @@ def callback(request: Request):
     try:
         scopes = [scope.attributes["handle"] for scope in AccessScope.find()]
     except Exception as e:
-        logger.log("scope_fetch_failed", {"error": str(e)}, store=shop, level="warn")
+        logger.log(
+            event="scope_fetch_failed",
+            level="warning",
+            store=shop,
+            data={"error": str(e), "message": "⚠️ Could not fetch access scopes."}
+        )
         scopes = []
 
-    # Compare with existing scopes if shop already exists
+    # Detect scope changes
     existing_shop = mongo.get_shop_by_domain(shop)
     previous_scopes = existing_shop.get("scopes") if existing_shop else None
 
     if previous_scopes and set(previous_scopes) != set(scopes):
-        logger.log("scope_changed", {
-            "previous": previous_scopes,
-            "current": scopes
-        }, store=shop)
+        logger.log(
+            event="scope_changed",
+            store=shop,
+            level="info",
+            data={
+                "message": "🔁 OAuth scope changed.",
+                "previous": previous_scopes,
+                "current": scopes
+            }
+        )
 
     # Save token and settings
     mongo.save_shop_token(shop, token, scopes)
     mongo.update_shop_settings(shop, DEFAULT_SETTINGS)
-    logger.log("shop_installed", {
-        "token_saved": True,
-        "scopes": scopes,
-        "settings": DEFAULT_SETTINGS
-    }, store=shop)
+
+    logger.log(
+        event="shop_installed",
+        store=shop,
+        level="success",
+        data={
+            "message": "✅ App installed successfully.",
+            "token_saved": True,
+            "scopes": scopes,
+            "settings": DEFAULT_SETTINGS
+        }
+    )
 
     # Register uninstall webhook
     uninstall_webhook = shopify.Webhook.create({
@@ -95,10 +129,20 @@ def callback(request: Request):
 
     if uninstall_webhook.errors:
         errors = uninstall_webhook.errors.full_messages()
-        logger.log("webhook_failed", {"errors": errors}, store=shop, level="warn")
+        logger.log(
+            event="webhook_failed",
+            store=shop,
+            level="warning",
+            data={"errors": errors, "message": "⚠️ Failed to register uninstall webhook."}
+        )
         webhook_success = False
     else:
-        logger.log("webhook_registered", {"topic": "app/uninstalled"}, store=shop)
+        logger.log(
+            event="webhook_registered",
+            store=shop,
+            level="info",
+            data={"topic": "app/uninstalled", "message": "📬 Uninstall webhook registered."}
+        )
         webhook_success = True
 
     shopify.ShopifyResource.clear_session()

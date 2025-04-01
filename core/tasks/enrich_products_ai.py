@@ -41,9 +41,9 @@ USER_PROMPT_TEMPLATE = (
     "\nUse British English."
 )
 
-RATE_LIMIT_DELAY = 1.5  # seconds between requests
+RATE_LIMIT_DELAY = 1.5
 rate_limit_lock = threading.Lock()
-last_request_time = [0.0]  # shared mutable object
+last_request_time = [0.0]
 
 def simulate_openai_response(barcode):
     if barcode == "857640006424":
@@ -81,19 +81,13 @@ def rate_limited_openai_call(prompt):
     )
 
 def calculate_costs(input_tokens, output_tokens, model=OPENAI_MODEL):
-    """
-    Calculate the cost for OpenAI API usage based on token usage and model.
-    """
     pricing = OPENAI_PRICING.get(model, OPENAI_PRICING['gpt-4o'])
-
     input_cost = (input_tokens / 1000) * pricing["cost_per_1k_input_tokens"]
     output_cost = (output_tokens / 1000) * pricing["cost_per_1k_output_tokens"]
+    return input_cost + output_cost, input_cost, output_cost
 
-    total_cost = input_cost + output_cost
-    return total_cost, input_cost, output_cost
-
-def enrich_product(barcode):
-    print(f"🔄 Enriching product {barcode}")
+def enrich_product(barcode, task_id=None, stats=None):
+    logger.log("ai_enriching_product", level="info", task_id=task_id, data={"barcode": barcode})
     product = Product(barcode)
 
     if product.product.get("ai_generate_status") != "pending":
@@ -110,14 +104,18 @@ def enrich_product(barcode):
     cache_key = f"ai_generated::{barcode}"
     cached = openai_cache.get(cache_key)
     if cached:
-        print(f"[CACHE HIT] Using cached response for barcode {barcode}")
-        logger.log("ai_cache_hit", level="info", data={"barcode": barcode})
+        logger.log("ai_cache_hit", level="info", task_id=task_id, data={"barcode": barcode})
         product.update_product(ai_generated_data=cached, ai_generate_status="success")
+        if stats:
+            stats["cache_hits"] += 1
+            stats["success"] += 1
         return
 
     if USE_DUMMY_DATA:
         simulated = simulate_openai_response(barcode)
         product.update_product(ai_generated_data=simulated.dict(), ai_generate_status="success")
+        if stats:
+            stats["success"] += 1
         return
 
     prompt = USER_PROMPT_TEMPLATE.format(
@@ -126,42 +124,38 @@ def enrich_product(barcode):
     )
 
     try:
-        # Make the rate-limited OpenAI API call
         response = rate_limited_openai_call(prompt)
-
-        # Parse the OpenAI response
         output = response.choices[0].message.parsed
         output_dict = output.model_dump(mode="json")
 
-        # Extract token usage info from the response
-        input_tokens = response.usage.prompt_tokens  # Access using dot notation
-        output_tokens = response.usage.completion_tokens  # Access using dot notation
+        input_tokens = response.usage.prompt_tokens
+        output_tokens = response.usage.completion_tokens
+        total_cost, input_cost, output_cost = calculate_costs(input_tokens, output_tokens)
 
-        # Calculate the cost of the request
-        total_cost, input_cost, output_cost = calculate_costs(
-            input_tokens, output_tokens, model=OPENAI_MODEL  # Use the dynamic model
-        )
-
-        # Log the cost breakdown
-        print(f"API Call cost breakdown for barcode {barcode}:")
-        print(f"  Input tokens: {input_tokens} => ${input_cost:.4f}")
-        print(f"  Output tokens: {output_tokens} => ${output_cost:.4f}")
-        print(f"  Total cost: ${total_cost:.4f}")
-
-        # Update product and cache the response
         product.update_product(ai_generated_data=output_dict, ai_generate_status="success")
         openai_cache.set(cache_key, output_dict)
 
-        print(f"✅ Enriched barcode {barcode}. Total cost: ${total_cost:.4f}")
-        logger.log("ai_generation_success", level="info", data={"barcode": barcode, "total_cost": total_cost})
+        logger.log("ai_generation_success", level="success", task_id=task_id, data={
+            "barcode": barcode,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_cost": round(total_cost, 4)
+        })
+
+        if stats:
+            stats["success"] += 1
+            stats["total_cost"] += total_cost
 
     except Exception as e:
-        print(f"[ERROR] Barcode {barcode}: {str(e)}")
-        logger.log("ai_generation_error", level="error", data={"barcode": barcode, "error": str(e)})
+        logger.log_product_error(barcode, str(e), task_id=task_id)
         product.update_product(ai_generate_status="failed")
+        if stats:
+            stats["failed"] += 1
 
 def enrich_products(limit=None, barcodes=None, brand=None):
-    total_enrichment_cost = 0
+    task_id = logger.log_task_start("enrich_products_ai")
+    start_time = time.time()
+
     query = {
         "barcode_lookup_status": "success",
         "images_status": "success",
@@ -178,12 +172,37 @@ def enrich_products(limit=None, barcodes=None, brand=None):
 
     barcodes_to_process = [doc["barcode"] for doc in cursor]
 
+    logger.log("ai_enrichment_started", level="info", task_id=task_id, data={
+        "message": "🧠 Starting AI enrichment",
+        "total_products": len(barcodes_to_process)
+    })
+
+    stats = {
+        "success": 0,
+        "failed": 0,
+        "cache_hits": 0,
+        "total_cost": 0.0
+    }
+
     with ThreadPoolExecutor(max_workers=4) as executor:
-        futures = [executor.submit(enrich_product, barcode) for barcode in barcodes_to_process]
+        futures = [executor.submit(enrich_product, barcode, task_id, stats) for barcode in barcodes_to_process]
         for future in as_completed(futures):
             future.result()
 
-    print(f"✅ Enrichment completed. Total cost for all enrichments: ${total_enrichment_cost:.4f}")
+    duration = time.time() - start_time
+
+    logger.log_task_end(
+        task_id=task_id,
+        event="enrich_products_ai",
+        success=stats["success"],
+        failed=stats["failed"],
+        duration=duration,
+        cache_hits=stats["cache_hits"]
+    )
+
+    logger.log("ai_enrichment_cost_summary", level="info", task_id=task_id, data={
+        "total_cost": round(stats["total_cost"], 4)
+    })
 
 if __name__ == "__main__":
     import argparse
@@ -198,4 +217,4 @@ if __name__ == "__main__":
     if args.command == "enrich_products_ai":
         enrich_products(limit=args.limit, barcodes=args.barcodes, brand=args.brand)
     else:
-        print("No valid command provided.")
+        logger.log("invalid_command", level="warning", data={"message": "No valid command provided"})

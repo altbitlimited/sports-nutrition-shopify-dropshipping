@@ -26,9 +26,11 @@ logger = AppLogger(mongo)
 BUNNY_UPLOAD_URL = f"https://{BUNNY_REGION}.storage.bunnycdn.com/{BUNNY_STORAGE_ZONE_NAME}/sn/product_images"
 HEADERS = {"AccessKey": BUNNY_ACCESS_KEY}
 
+
 def is_valid_image(response):
     content_type = response.headers.get("Content-Type", "")
     return response.status_code == 200 and content_type.startswith("image/")
+
 
 def is_valid_image_pillow(file_name):
     try:
@@ -38,11 +40,15 @@ def is_valid_image_pillow(file_name):
     except (IOError, SyntaxError):
         return False
 
+
 def upload_to_bunny(barcode, image_url, index):
     try:
         response = requests.get(image_url, timeout=10)
         if not is_valid_image(response):
-            print(f"Invalid image headers: {image_url}")
+            logger.log("invalid_image_response", level="warning", data={
+                "barcode": barcode, "url": image_url,
+                "message": "⚠️ Invalid image headers"
+            })
             return None
 
         filename = f"{barcode}_{index}.jpg"
@@ -53,7 +59,10 @@ def upload_to_bunny(barcode, image_url, index):
             temp_file_path = tmp_file.name
 
         if not is_valid_image_pillow(temp_file_path):
-            print(f"Image failed Pillow validation: {image_url}")
+            logger.log("pillow_image_invalid", level="warning", data={
+                "barcode": barcode, "url": image_url,
+                "message": "⚠️ Failed Pillow validation"
+            })
             os.remove(temp_file_path)
             return None
 
@@ -68,29 +77,52 @@ def upload_to_bunny(barcode, image_url, index):
         os.remove(temp_file_path)
 
         if upload_response.status_code == 201:
-            return upload_path.replace(f"https://ny.storage.bunnycdn.com/{BUNNY_STORAGE_ZONE_NAME}", f"https://{BUNNY_STORAGE_ZONE_NAME}.b-cdn.net")
+            return upload_path.replace(
+                f"https://ny.storage.bunnycdn.com/{BUNNY_STORAGE_ZONE_NAME}",
+                f"https://{BUNNY_STORAGE_ZONE_NAME}.b-cdn.net"
+            )
         else:
-            print(f"Upload failed for {filename}: {upload_response.status_code}")
+            logger.log("bunny_upload_failed", level="error", data={
+                "barcode": barcode,
+                "status": upload_response.status_code,
+                "message": "❌ Bunny upload failed"
+            })
             return None
 
     except Exception as e:
-        print(f"Error uploading image {image_url}: {e}")
+        logger.log("upload_exception", level="error", data={
+            "barcode": barcode,
+            "error": str(e),
+            "message": "❌ Exception while uploading image"
+        })
         return None
 
-def enrich_product_images(barcode):
-    print(f"🖼️ Enriching images for barcode: {barcode}")
+
+def enrich_product_images(barcode, task_id=None, stats=None):
+    logger.log("image_enrichment_start", level="info", task_id=task_id, data={
+        "barcode": barcode,
+        "message": "🖼️ Starting image enrichment"
+    })
     product = Product(barcode)
 
     if not product.product or \
        product.product.get("images_status") != "pending" or \
        product.product.get("barcode_lookup_status") != "success":
-        print(f"⚠️ Skipping barcode {barcode} — not ready for image enrichment.")
+        logger.log("image_enrichment_skipped", level="warning", task_id=task_id, data={
+            "barcode": barcode,
+            "message": "⚠️ Skipping image enrichment — not ready"
+        })
         return
 
     images = product.product.get("barcode_lookup_data", {}).get("images", [])
     if not images:
-        print(f"❌ No images found for barcode {barcode}.")
-        product.update_product(images_status="success")  # Mark as success even with no images
+        logger.log("image_enrichment_no_images", level="info", task_id=task_id, data={
+            "barcode": barcode,
+            "message": "ℹ️ No images found, marking as success"
+        })
+        product.update_product(images_status="success")
+        if stats:
+            stats["success"] += 1
         return
 
     cdn_urls = []
@@ -102,41 +134,69 @@ def enrich_product_images(barcode):
             if uploaded_url:
                 cdn_urls.append(uploaded_url)
 
-    # Always mark as success — even if no valid images
     product.update_product(
         image_urls=cdn_urls if cdn_urls else None,
         images_status="success"
     )
 
-    if cdn_urls:
-        print(f"✅ Enriched {barcode} with {len(cdn_urls)} images.")
-    else:
-        print(f"⚠️ No valid images were uploaded for {barcode}, but marked as success.")
+    if stats:
+        stats["success"] += 1
+        if not cdn_urls:
+            stats["no_images"] += 1
+
+    logger.log("image_enrichment_complete", level="success", task_id=task_id, data={
+        "barcode": barcode,
+        "cdn_images": len(cdn_urls),
+        "message": f"✅ Completed image enrichment — {len(cdn_urls)} image(s) uploaded"
+    })
+
 
 def enrich_images(batch_size=50):
-    print("🔍 Starting product image enrichment...")
+    task_id = logger.log_task_start("enrich_products_images")
+    start_time = time.time()
 
     barcodes = [p["barcode"] for p in mongo.db.products.find({
         "barcode_lookup_status": "success",
         "images_status": {"$in": [None, "pending"]}
     })]
 
-    print(f"📦 Found {len(barcodes)} products to enrich.")
+    logger.log("image_enrichment_found", level="info", task_id=task_id, data={
+        "count": len(barcodes),
+        "message": f"🔍 Found {len(barcodes)} products to enrich"
+    })
+
+    stats = {
+        "success": 0,
+        "failed": 0,
+        "no_images": 0
+    }
 
     with ThreadPoolExecutor() as executor:
-        futures = {executor.submit(enrich_product_images, b): b for b in barcodes[:batch_size]}
+        futures = {executor.submit(enrich_product_images, b, task_id, stats): b for b in barcodes[:batch_size]}
         for future in as_completed(futures):
-            future.result()
+            try:
+                future.result()
+            except Exception as e:
+                logger.log("image_enrichment_batch_error", level="error", task_id=task_id, data={
+                    "error": str(e),
+                    "message": "❌ Error during threaded enrichment"
+                })
+                stats["failed"] += 1
 
-    logger.log(
-        event="enrich_products_images_task_complete",
-        store=None,
-        level="info",
-        data={"message": f"Completed image enrichment for {min(len(barcodes), batch_size)} products."}
+    duration = time.time() - start_time
+
+    logger.log_task_end(
+        task_id=task_id,
+        event="enrich_products_images",
+        success=stats["success"],
+        failed=stats["failed"],
+        duration=duration,
+        cache_hits=0
     )
+
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "enrich_products_images":
         enrich_images()
     else:
-        print("No valid command provided.")
+        logger.log("invalid_command", level="warning", data={"message": "No valid command provided"})

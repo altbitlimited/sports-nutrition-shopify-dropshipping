@@ -11,7 +11,7 @@ logger = AppLogger(mongo)
 class Product:
     def __init__(self, barcode: str):
         self.barcode = barcode
-        self.product = self.get_product()  # Automatically populate the product data when instantiated
+        self.product = self.get_product()
 
     def get_product(self):
         """
@@ -24,7 +24,11 @@ class Product:
                 raise ProductNotFoundError(self.barcode)
             return product
         except Exception as e:
-            logger.log(event="mongodb_error", level="error", data={"message": f"Error fetching product: {str(e)}"})
+            logger.log(
+                event="mongodb_error",
+                level="error",
+                data={"barcode": self.barcode, "message": f"Error fetching product: {str(e)}"}
+            )
             raise
 
     def add_supplier(self, supplier_name, supplier_data, supplier_parsed_data):
@@ -35,21 +39,19 @@ class Product:
         if not self.product:
             raise ProductNotFoundError(self.barcode)
 
-        # Check if the supplier is already associated with the product
         existing_suppliers = [s["name"] for s in self.product.get("suppliers", [])]
         if supplier_name not in existing_suppliers:
             self.product["suppliers"].append({
                 "name": supplier_name,
-                "data": supplier_data,  # Directly use the supplier's data
-                "parsed": supplier_parsed_data  # Use the parsed standardized data
+                "data": supplier_data,
+                "parsed": supplier_parsed_data
             })
 
-            # Update the product with the new supplier
             mongo.db.products.update_one(
                 {"barcode": self.barcode},
                 {"$set": {
                     "suppliers": self.product["suppliers"],
-                    "updated_at": datetime.utcnow()  # Update the updated_at timestamp
+                    "updated_at": datetime.utcnow()
                 }}
             )
 
@@ -60,12 +62,20 @@ class Product:
                 data={
                     "barcode": self.barcode,
                     "supplier_name": supplier_name,
-                    "message": "Supplier added to the product"
+                    "message": f"🔗 Supplier {supplier_name} added to product."
                 }
             )
-            print(f"Supplier {supplier_name} added to product {self.barcode}.")
         else:
-            print(f"Supplier {supplier_name} already exists for product {self.barcode}.")
+            logger.log(
+                event="supplier_already_exists",
+                store=None,
+                level="debug",
+                data={
+                    "barcode": self.barcode,
+                    "supplier_name": supplier_name,
+                    "message": f"Supplier {supplier_name} already linked to product."
+                }
+            )
 
     def prune_supplier_link(self, supplier_name):
         """
@@ -82,9 +92,10 @@ class Product:
                 {"barcode": self.barcode},
                 {"$set": {
                     "suppliers": suppliers,
-                    "updated_at": datetime.utcnow()  # Update the updated_at timestamp
+                    "updated_at": datetime.utcnow()
                 }}
             )
+
             logger.log(
                 event="supplier_removed",
                 store=None,
@@ -92,14 +103,24 @@ class Product:
                 data={
                     "barcode": self.barcode,
                     "supplier_name": supplier_name,
-                    "message": "Supplier removed from the product"
+                    "message": f"🧹 Supplier {supplier_name} removed from product."
                 }
             )
-            print(f"Supplier {supplier_name} removed from product {self.barcode}.")
         else:
-            print(f"Supplier {supplier_name} not found in product {self.barcode}.")
+            logger.log(
+                event="supplier_not_found",
+                store=None,
+                level="warning",
+                data={
+                    "barcode": self.barcode,
+                    "supplier_name": supplier_name,
+                    "message": f"⚠️ Supplier {supplier_name} not found in product."
+                }
+            )
 
-    def update_product(self, barcode_lookup_data=None, barcode_lookup_status=None, ai_generated_data=None, ai_generate_status=None, image_urls=None, suppliers=None, images_status=None):
+    def update_product(self, barcode_lookup_data=None, barcode_lookup_status=None,
+                       ai_generated_data=None, ai_generate_status=None,
+                       image_urls=None, suppliers=None, images_status=None):
         """
         Update the product in the database.
         Logs the action.
@@ -127,7 +148,7 @@ class Product:
         if suppliers is not None:
             update_data["suppliers"] = suppliers
 
-        update_data["updated_at"] = datetime.utcnow()  # Always update the updated_at timestamp
+        update_data["updated_at"] = datetime.utcnow()
 
         try:
             result = mongo.db.products.update_one(
@@ -140,15 +161,26 @@ class Product:
                 logger.log(
                     event="product_updated",
                     store=None,
-                    level="info",
+                    level="success",
                     data={
                         "barcode": self.barcode,
-                        "message": "Product updated in the database"
+                        "message": f"✅ Product updated successfully."
                     }
                 )
-                print(f"Product {self.barcode} updated.")
             else:
-                print(f"No changes made for product {self.barcode}.")
+                logger.log(
+                    event="product_no_changes",
+                    store=None,
+                    level="debug",
+                    data={
+                        "barcode": self.barcode,
+                        "message": "No changes made to product."
+                    }
+                )
         except Exception as e:
-            logger.log(event="mongodb_error", level="error", data={"message": str(e)})
+            logger.log(
+                event="mongodb_error",
+                level="error",
+                data={"barcode": self.barcode, "message": f"Database update failed: {str(e)}"}
+            )
             raise Exception(f"Database operation failed: {str(e)}")

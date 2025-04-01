@@ -5,6 +5,9 @@ import os
 
 load_dotenv()
 
+ENVIRONMENT = os.getenv("ENVIRONMENT", "production").lower()
+IS_DEV = ENVIRONMENT == "development"
+
 SHOPIFY_API_KEY = os.getenv("SHOPIFY_API_KEY")
 SHOPIFY_API_SECRET = os.getenv("SHOPIFY_API_SECRET")
 SHOPIFY_API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2025-01").strip()

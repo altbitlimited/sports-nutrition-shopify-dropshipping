@@ -28,17 +28,17 @@ rate_limit_lock = threading.Lock()
 MAX_RETRIES = 3
 INITIAL_BACKOFF_DELAY = 1  # seconds
 
-
-def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=INITIAL_BACKOFF_DELAY):
+def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=INITIAL_BACKOFF_DELAY, stats=None):
     if ENABLE_BARCODELOOKUP_CACHE:
         cached = barcode_cache.get(barcode)
         if cached:
-            print(f"[CACHE HIT] Barcode {barcode} — using cached barcode lookup data.")
-            logger.log(event="barcode_lookup_cache_hit", level="info", data={"barcode": barcode})
+            logger.log("barcode_lookup_cache_hit", level="info", data={"barcode": barcode})
+            if stats:
+                stats["cache_hits"] += 1
             return cached
 
     if USE_DUMMY_DATA:
-        print(f"[DUMMY] Using dummy data for barcode: {barcode}")
+        logger.log("barcode_lookup_dummy", level="info", data={"barcode": barcode})
         return {
             "barcode_number": barcode,
             "title": "Ghost Whey Protein 26 Servings, Milk Chocolate",
@@ -54,9 +54,12 @@ def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=IN
     attempt = 0
     while attempt < retries:
         try:
-            print(f"🔍 Fetching data for barcode: {barcode} (Attempt {attempt + 1})")
+            logger.log("barcode_lookup_attempt", level="debug", data={
+                "barcode": barcode,
+                "attempt": attempt + 1,
+                "message": f"🔍 Fetching data for barcode: {barcode} (Attempt {attempt + 1})"
+            })
 
-            # Rate limit handling across threads
             with rate_limit_lock:
                 response = requests.get(BARCODELOOKUP_API_URL, params={
                     'barcode': barcode,
@@ -69,56 +72,73 @@ def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=IN
                     data = product_data['products'][0]
                     if ENABLE_BARCODELOOKUP_CACHE:
                         barcode_cache.set(barcode, data)
-                        print(f"[CACHE SAVE] Cached barcode {barcode} lookup data.")
+                        logger.log("barcode_lookup_cached", level="debug", data={
+                            "barcode": barcode,
+                            "message": f"📦 Cached barcode {barcode} lookup data."
+                        })
                     return data
                 else:
-                    print(f"[404] No product found for barcode: {barcode}")
+                    logger.log("barcode_lookup_not_found", level="debug", data={
+                        "barcode": barcode,
+                        "message": f"🛑 No product found for barcode: {barcode}"
+                    })
                     return None
             else:
-                logger.log(event="barcode_lookup_api_error", level="error", data={
+                logger.log("barcode_lookup_api_error", level="error", data={
                     "barcode": barcode,
                     "status_code": response.status_code,
                     "response": response.text
                 })
                 return None
+
         except Exception as e:
             attempt += 1
-            print(f"[ERROR] Barcode {barcode}: {str(e)} — retrying...")
-            logger.log(event="barcode_lookup_error", level="error", data={
+            logger.log("barcode_lookup_error", level="error", data={
                 "barcode": barcode,
                 "error": str(e),
                 "attempt": attempt
             })
-            time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))  # Exponential backoff
+            time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
 
     return None
 
+def enrich_product(barcode, stats=None, task_id=None):
+    logger.log("barcode_lookup_enriching", level="debug", data={
+        "barcode": barcode,
+        "message": f"🔄 Enriching product {barcode}"
+    })
 
-def enrich_product(barcode):
-    print(f"🔄 Enriching product {barcode}")
     product = Product(barcode)
 
     if product.product and product.product.get("barcode_lookup_status") == "pending":
-        product_data = fetch_product_data_from_barcodelookup(barcode)
+        product_data = fetch_product_data_from_barcodelookup(barcode, stats=stats)
 
         if product_data:
             product.update_product(barcode_lookup_data=product_data, barcode_lookup_status="success")
-            print(f"✅ Enriched barcode {barcode}")
+            logger.log("barcode_lookup_enriched", level="debug", data={
+                "barcode": barcode,
+                "message": f"✅ Enriched barcode {barcode}"
+            })
+            if stats:
+                stats["success"] += 1
         else:
             product.update_product(barcode_lookup_status="failed")
-            print(f"❌ Failed to enrich barcode {barcode}")
-            logger.log(event="barcode_lookup_failed", level="error", data={
+            logger.log("barcode_lookup_failed", level="error", task_id=task_id, data={
                 "barcode": barcode,
                 "message": "No product data returned from barcode lookup"
             })
+            if stats:
+                stats["failed"] += 1
     else:
-        print(f"⚠️ Skipping barcode {barcode} — already enriched or not pending.")
-
+        logger.log("barcode_lookup_skipped", level="debug", data={
+            "barcode": barcode,
+            "message": f"⚠️ Skipping barcode {barcode} — already enriched or not pending."
+        })
 
 def enrich_products(batch_size=500):
-    print("🔍 Starting barcode enrichment task...")
+    task_id = logger.log_task_start("enrich_products_barcode_lookup")
+    start_time = time.time()
 
-    products = Products()
     barcodes_to_enrich = [
         p["barcode"]
         for p in mongo.db.products.find({
@@ -126,25 +146,43 @@ def enrich_products(batch_size=500):
         })
     ]
 
-    print(f"🧺 Found {len(barcodes_to_enrich)} barcodes to enrich.")
+    logger.log("barcode_lookup_found", level="info", task_id=task_id, data={
+        "barcodes_to_enrich": len(barcodes_to_enrich),
+        "message": f"🧺 Found {len(barcodes_to_enrich)} barcodes to enrich"
+    })
+
+    stats = {
+        "success": 0,
+        "failed": 0,
+        "cache_hits": 0
+    }
 
     with ThreadPoolExecutor() as executor:
         futures = {
-            executor.submit(enrich_product, barcode): barcode
+            executor.submit(enrich_product, barcode, stats, task_id): barcode
             for barcode in barcodes_to_enrich[:batch_size]
         }
         for future in as_completed(futures):
-            future.result()
+            try:
+                future.result()
+            except Exception as e:
+                logger.log("barcode_lookup_thread_error", level="error", task_id=task_id, data={
+                    "error": str(e)
+                })
+                stats["failed"] += 1
 
-    logger.log(event="barcode_lookup_task_complete", level="info", data={
-        "enriched": len(barcodes_to_enrich[:batch_size])
-    })
-
-    print("✅ Barcode enrichment task complete.")
-
+    duration = time.time() - start_time
+    logger.log_task_end(
+        task_id=task_id,
+        event="enrich_products_barcode_lookup",
+        success=stats["success"],
+        failed=stats["failed"],
+        duration=duration,
+        cache_hits=stats["cache_hits"]
+    )
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "enrich_products_barcode_lookup":
         enrich_products()
     else:
-        print("No valid command provided.")
+        logger.log("invalid_command", level="warning", data={"message": "⚠️ No valid command provided"})
