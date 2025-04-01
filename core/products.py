@@ -36,6 +36,11 @@ class Products:
             "barcode": barcode,
             "barcode_lookup_data": None,  # Set to None (null in MongoDB)
             "barcode_lookup_status": "pending",
+            "barcode_lookup_at": None,  # Timestamp of last lookup attempt
+            "images_status": "pending",  # Set image status to pending
+            "images_at": None,  # Timestamp of last image enrichment
+            "ai_generate_status": "pending",  # Set AI generate status to pending
+            "ai_generate_at": None,  # Timestamp of last AI enrichment
             "ai_generated_data": None,    # Set to None (null in MongoDB)
             "image_urls": None,           # Set to None (null in MongoDB)
             "suppliers": [
@@ -72,9 +77,12 @@ class Products:
 
             product_obj.update_product(
                 barcode_lookup_data=product_update.get("barcode_lookup_data"),
+                barcode_lookup_status=product_update.get("barcode_lookup_status"),
                 ai_generated_data=product_update.get("ai_generated_data"),
+                ai_generate_status=product_update.get("ai_generate_status"),
                 image_urls=product_update.get("image_urls"),
-                suppliers=product_update.get("suppliers")
+                suppliers=product_update.get("suppliers"),
+                images_status=product_update.get("images_status")
             )
 
             logger.log(

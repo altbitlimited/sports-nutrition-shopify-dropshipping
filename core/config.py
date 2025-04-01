@@ -19,3 +19,7 @@ APP_BASE_URL = os.getenv("APP_BASE_URL", "http://localhost:8000")
 BARCODELOOKUP_API_KEY = os.getenv("BARCODELOOKUP_API_KEY", None)
 
 USE_DUMMY_DATA = os.getenv("USE_DUMMY_DATA", "false").lower() == "true"
+
+BUNNY_REGION = os.getenv("BUNNY_REGION", None)
+BUNNY_STORAGE_ZONE_NAME = os.getenv("BUNNY_STORAGE_ZONE_NAME", None)
+BUNNY_ACCESS_KEY = os.getenv("BUNNY_ACCESS_KEY", None)

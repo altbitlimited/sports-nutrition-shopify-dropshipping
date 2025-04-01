@@ -31,6 +31,8 @@ class MongoManager:
 
         # Index on barcode_lookup_status to speed up filtering by enrichment status
         self.products.create_index([("barcode_lookup_status", ASCENDING)], name="barcode_lookup_status_index")
+        self.products.create_index([("images_status", ASCENDING)], name="images_status_index")
+        self.products.create_index([("barcode_lookup_status", ASCENDING), ("images_status", ASCENDING)], name="enrich_products_barcode_lookup_images_status")
 
         # Compound index on barcode and supplier.name for fast queries filtering by both
         self.products.create_index([("barcode", ASCENDING), ("suppliers.name", ASCENDING)],

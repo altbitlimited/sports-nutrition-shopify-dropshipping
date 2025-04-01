@@ -6,3 +6,4 @@ Test Task
 python -m core.tasks.prune_old_logs prune_old_logs
 python -m core.tasks.discover_new_products discover_new_products
 python -m core.tasks.enrich_products_barcode_lookup enrich_products_barcode_lookup
+python -m core.tasks.enrich_products_images enrich_products_images

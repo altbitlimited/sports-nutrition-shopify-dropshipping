@@ -19,4 +19,8 @@
   name = "enrich_products_barcode_lookup"
   schedule = "0 7 * * *"  # Every day at 7:00 AM UTC
   command = "python3 core/tasks/enrich_products_barcode_lookup.py enrich_products_barcode_lookup"
+[[cron]]
+  name = "enrich_products_images"
+  schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
+  command = "python3 core/tasks/enrich_products_images.py enrich_products_images"
 

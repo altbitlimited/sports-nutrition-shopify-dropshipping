@@ -77,19 +77,6 @@ def process_barcodes_for_supplier(supplier, supplier_barcodes, products, batch_s
 
                     # Create the new product
                     product_obj = products.add_new_product(barcode=barcode, supplier_data=supplier_data)
-
-                    # Log the new product creation
-                    logger.log(
-                        event="new_product_created",
-                        store=None,
-                        level="info",
-                        data={
-                            "barcode": barcode,
-                            "supplier": supplier.name,
-                            "message": f"New product created by {supplier.name}.",
-                            "product_data": product_data['parsed']  # Log the parsed data
-                        }
-                    )
                 else:
                     # If product exists, check if this supplier is linked
                     product_obj = Product(barcode)

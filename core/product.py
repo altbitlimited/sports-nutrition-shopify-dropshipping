@@ -27,7 +27,7 @@ class Product:
             logger.log(event="mongodb_error", level="error", data={"message": f"Error fetching product: {str(e)}"})
             raise
 
-    def update_product(self, barcode_lookup_data=None, ai_generated_data=None, image_urls=None, suppliers=None, barcode_lookup_status=None):
+    def update_product(self, barcode_lookup_data=None, barcode_lookup_status=None, ai_generated_data=None, ai_generate_status=None, image_urls=None, suppliers=None, images_status=None):
         """
         Update the product in the database.
         Logs the action.
@@ -39,14 +39,21 @@ class Product:
 
         if barcode_lookup_data is not None:
             update_data["barcode_lookup_data"] = barcode_lookup_data
-        if ai_generated_data is not None:
-            update_data["ai_generated_data"] = ai_generated_data
-        if image_urls is not None:
-            update_data["image_urls"] = image_urls
-        if suppliers is not None:
-            update_data["suppliers"] = suppliers
         if barcode_lookup_status is not None:
             update_data["barcode_lookup_status"] = barcode_lookup_status
+            update_data["barcode_lookup_at"] = datetime.utcnow()
+        if ai_generated_data is not None:
+            update_data["ai_generated_data"] = ai_generated_data
+        if ai_generate_status is not None:
+            update_data["ai_generate_status"] = ai_generate_status
+            update_data["ai_generate_at"] = datetime.utcnow()
+        if image_urls is not None:
+            update_data["image_urls"] = image_urls
+        if images_status is not None:
+            update_data["images_status"] = images_status
+            update_data["images_at"] = datetime.utcnow()
+        if suppliers is not None:
+            update_data["suppliers"] = suppliers
 
         update_data["updated_at"] = datetime.utcnow()  # Always update the updated_at timestamp
 

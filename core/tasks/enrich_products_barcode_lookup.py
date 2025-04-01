@@ -150,19 +150,6 @@ def enrich_product(barcode):
         if product_data:
             print(f"Data fetched successfully for barcode {barcode}. Updating product...")
             product.update_product(barcode_lookup_data=product_data, barcode_lookup_status="success")
-
-            # Log success
-            # logger.log(
-            #     event="enrich_products_barcode_lookup_product_enriched",
-            #     store=None,
-            #     level="info",
-            #     data={
-            #         "barcode": barcode,
-            #         "status": "success",
-            #         "message": "Product enriched from BarcodeLookup",
-            #         "product_data": product_data
-            #     }
-            # )
         else:
             print(f"Failed to fetch data for barcode {barcode}. Marking as failed.")
             # If no data is found, mark the status as failed
