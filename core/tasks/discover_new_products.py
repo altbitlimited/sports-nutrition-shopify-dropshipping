@@ -59,18 +59,18 @@ def process_barcodes_for_supplier(supplier, supplier_barcodes, products, task_id
                         "parsed": product_data['parsed']
                     }
                     products.add_new_product(barcode=barcode, supplier_data=supplier_data)
-                    logger.log(
-                        event="new_product_created",
-                        store=None,
-                        level="info",
-                        task_id=task_id,
-                        data={
-                            "barcode": barcode,
-                            "supplier": supplier.name,
-                            "message": f"New product created by {supplier.name}.",
-                            "product_data": product_data['parsed']
-                        }
-                    )
+                    # logger.log(
+                    #     event="new_product_created",
+                    #     store=None,
+                    #     level="info",
+                    #     task_id=task_id,
+                    #     data={
+                    #         "barcode": barcode,
+                    #         "supplier": supplier.name,
+                    #         "message": f"New product created by {supplier.name}.",
+                    #         "product_data": product_data['parsed']
+                    #     }
+                    # )
                 else:
                     product_obj = Product(barcode)
                     existing_suppliers = [s["name"] for s in product.get("suppliers", [])]
