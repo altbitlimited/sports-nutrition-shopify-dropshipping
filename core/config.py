@@ -33,3 +33,12 @@ TROPICANA_SFTP_PORT = os.getenv("TROPICANA_SFTP_PORT", None)
 TROPICANA_SFTP_USERNAME = os.getenv("TROPICANA_SFTP_USERNAME", None)
 TROPICANA_SFTP_PASSWORD = os.getenv("TROPICANA_SFTP_PASSWORD", None)
 TROPICANA_SFTP_PATH = os.getenv("TROPICANA_SFTP_PATH", None)
+
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", None)
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", 'gpt-4o')
+OPENAI_PRICING = {
+    "gpt-4o": {
+        "cost_per_1k_input_tokens": 0.0025,
+        "cost_per_1k_output_tokens": 0.01
+    }
+}

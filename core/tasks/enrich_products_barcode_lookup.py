@@ -4,6 +4,7 @@ import sys
 import time
 import random
 import requests
+import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from core.MongoManager import MongoManager
 from core.product import Product
@@ -20,8 +21,15 @@ BARCODELOOKUP_API_URL = 'https://api.barcodelookup.com/v3/products'
 MAX_REQUESTS_PER_MINUTE = 40
 REQUEST_INTERVAL = 60 / MAX_REQUESTS_PER_MINUTE
 
+# Shared rate limiter across threads
+rate_limit_lock = threading.Lock()
 
-def fetch_product_data_from_barcodelookup(barcode, retries=3, delay=2):
+# Exponential backoff settings
+MAX_RETRIES = 3
+INITIAL_BACKOFF_DELAY = 1  # seconds
+
+
+def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=INITIAL_BACKOFF_DELAY):
     if ENABLE_BARCODELOOKUP_CACHE:
         cached = barcode_cache.get(barcode)
         if cached:
@@ -47,10 +55,13 @@ def fetch_product_data_from_barcodelookup(barcode, retries=3, delay=2):
     while attempt < retries:
         try:
             print(f"🔍 Fetching data for barcode: {barcode} (Attempt {attempt + 1})")
-            response = requests.get(BARCODELOOKUP_API_URL, params={
-                'barcode': barcode,
-                'key': BARCODELOOKUP_API_KEY
-            })
+
+            # Rate limit handling across threads
+            with rate_limit_lock:
+                response = requests.get(BARCODELOOKUP_API_URL, params={
+                    'barcode': barcode,
+                    'key': BARCODELOOKUP_API_KEY
+                })
 
             if response.status_code == 200:
                 product_data = response.json()
@@ -78,7 +89,7 @@ def fetch_product_data_from_barcodelookup(barcode, retries=3, delay=2):
                 "error": str(e),
                 "attempt": attempt
             })
-            time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
+            time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))  # Exponential backoff
 
     return None
 

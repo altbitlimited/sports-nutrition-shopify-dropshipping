@@ -34,7 +34,9 @@ class MongoManager:
         # Index on barcode_lookup_status to speed up filtering by enrichment status
         self.products.create_index([("barcode_lookup_status", ASCENDING)], name="barcode_lookup_status_index")
         self.products.create_index([("images_status", ASCENDING)], name="images_status_index")
+        self.products.create_index([("ai_generate_status", ASCENDING)], name="ai_generate_status_index")
         self.products.create_index([("barcode_lookup_status", ASCENDING), ("images_status", ASCENDING)], name="enrich_products_barcode_lookup_images_status")
+        self.products.create_index([("barcode_lookup_status", ASCENDING), ("images_status", ASCENDING), ("ai_generate_status", ASCENDING)], name="enrich_products_barcode_lookup_images_ai_generate_status")
 
         # Compound index on barcode and supplier.name for fast queries filtering by both
         self.products.create_index([("barcode", ASCENDING), ("suppliers.name", ASCENDING)],
@@ -42,9 +44,11 @@ class MongoManager:
 
         # Index on created_at for efficient querying and sorting by product creation date
         self.products.create_index([("created_at", DESCENDING)], name="created_at_index")
+        self.products.create_index([("barcode_lookup_data.brand", ASCENDING)], name="brand_index")
 
         self.barcode_lookup_cache.create_index([("key", ASCENDING)], name="key_index")
         self.openai_cache.create_index([("key", ASCENDING)], name="key_index")
+
 
 
     def get_shop_by_domain(self, shop_domain):
