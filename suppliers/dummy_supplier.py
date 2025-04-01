@@ -26,26 +26,26 @@ class DummySupplier(Supplier):
                 "weight": "900g",
                 "other_data": "something"
             },
-            # {
-            #     "ean": "810028293847",
-            #     "name": "Dummy Product 2",
-            #     "stock_count": 10,
-            #     "price": 3.00,
-            #     "product_code": "XYZ124",
-            #     "brand": "Brand B",
-            #     "weight": "200g",
-            #     "other_data": "something"
-            # },
-            # {
-            #     "ean": "857640006158",
-            #     "name": "Dummy Product 3",
-            #     "stock_count": 55,
-            #     "price": 30.00,
-            #     "product_code": "XYZ125",
-            #     "brand": "Brand C",
-            #     "weight": "700g",
-            #     "other_data": "something"
-            # },
+            {
+                "ean": "810028293847",
+                "name": "Dummy Product 2",
+                "stock_count": 10,
+                "price": 3.00,
+                "product_code": "XYZ124",
+                "brand": "Brand B",
+                "weight": "200g",
+                "other_data": "something"
+            },
+            {
+                "ean": "857640006158",
+                "name": "Dummy Product 3",
+                "stock_count": 55,
+                "price": 30.00,
+                "product_code": "XYZ125",
+                "brand": "Brand C",
+                "weight": "700g",
+                "other_data": "something"
+            },
         ]
 
         # and populate our dummy parsed data

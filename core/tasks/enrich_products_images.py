@@ -5,6 +5,7 @@ import os
 import time
 import mimetypes
 import requests
+import tempfile
 from PIL import Image
 from urllib.parse import urlparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -25,11 +26,9 @@ logger = AppLogger(mongo)
 BUNNY_UPLOAD_URL = f"https://{BUNNY_REGION}.storage.bunnycdn.com/{BUNNY_STORAGE_ZONE_NAME}/sn/product_images"
 HEADERS = {"AccessKey": BUNNY_ACCESS_KEY}
 
-
 def is_valid_image(response):
     content_type = response.headers.get("Content-Type", "")
     return response.status_code == 200 and content_type.startswith("image/")
-
 
 def is_valid_image_pillow(file_name):
     try:
@@ -39,7 +38,6 @@ def is_valid_image_pillow(file_name):
     except (IOError, SyntaxError):
         return False
 
-
 def upload_to_bunny(barcode, image_url, index):
     try:
         response = requests.get(image_url, timeout=10)
@@ -48,10 +46,11 @@ def upload_to_bunny(barcode, image_url, index):
             return None
 
         filename = f"{barcode}_{index}.jpg"
-        temp_file_path = f"/tmp/{filename}"
 
-        with open(temp_file_path, "wb") as f:
-            f.write(response.content)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_file:
+            tmp_file.write(response.content)
+            tmp_file.flush()
+            temp_file_path = tmp_file.name
 
         if not is_valid_image_pillow(temp_file_path):
             print(f"Image failed Pillow validation: {image_url}")
@@ -78,7 +77,6 @@ def upload_to_bunny(barcode, image_url, index):
         print(f"Error uploading image {image_url}: {e}")
         return None
 
-
 def enrich_product_images(barcode):
     print(f"🖼️ Enriching images for barcode: {barcode}")
     product = Product(barcode)
@@ -92,7 +90,7 @@ def enrich_product_images(barcode):
     images = product.product.get("barcode_lookup_data", {}).get("images", [])
     if not images:
         print(f"❌ No images found for barcode {barcode}.")
-        product.update_product(images_status="failed")
+        product.update_product(images_status="success")  # Mark as success even with no images
         return
 
     cdn_urls = []
@@ -104,16 +102,16 @@ def enrich_product_images(barcode):
             if uploaded_url:
                 cdn_urls.append(uploaded_url)
 
+    # Always mark as success — even if no valid images
+    product.update_product(
+        image_urls=cdn_urls if cdn_urls else None,
+        images_status="success"
+    )
+
     if cdn_urls:
-        product.update_product(
-            image_urls=cdn_urls,
-            images_status="success"
-        )
         print(f"✅ Enriched {barcode} with {len(cdn_urls)} images.")
     else:
-        product.update_product(images_status="failed")
-        print(f"❌ Failed to upload images for {barcode}.")
-
+        print(f"⚠️ No valid images were uploaded for {barcode}, but marked as success.")
 
 def enrich_images(batch_size=50):
     print("🔍 Starting product image enrichment...")
@@ -136,7 +134,6 @@ def enrich_images(batch_size=50):
         level="info",
         data={"message": f"Completed image enrichment for {min(len(barcodes), batch_size)} products."}
     )
-
 
 if __name__ == "__main__":
     if len(sys.argv) > 1 and sys.argv[1] == "enrich_products_images":
