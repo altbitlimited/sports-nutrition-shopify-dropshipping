@@ -11,7 +11,9 @@ class MongoManager:
         self.db = self.client[MONGODB_DB_NAME]
         self.shops = self.db["shops"]
         self.logs = self.db["logs"]
-        self.products = self.db["products"]  # Assuming you want to work with the products collection
+        self.products = self.db["products"]
+        self.barcode_lookup_cache = self.db["barcode_lookup_cache"]
+        self.openai_cache = self.db["openai_cache"]
 
         # Create indexes for efficient querying
         self.create_indexes()
@@ -40,6 +42,9 @@ class MongoManager:
 
         # Index on created_at for efficient querying and sorting by product creation date
         self.products.create_index([("created_at", DESCENDING)], name="created_at_index")
+
+        self.barcode_lookup_cache.create_index([("key", ASCENDING)], name="key_index")
+        self.openai_cache.create_index([("key", ASCENDING)], name="key_index")
 
 
     def get_shop_by_domain(self, shop_domain):

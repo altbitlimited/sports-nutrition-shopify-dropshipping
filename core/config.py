@@ -23,3 +23,6 @@ USE_DUMMY_DATA = os.getenv("USE_DUMMY_DATA", "false").lower() == "true"
 BUNNY_REGION = os.getenv("BUNNY_REGION", None)
 BUNNY_STORAGE_ZONE_NAME = os.getenv("BUNNY_STORAGE_ZONE_NAME", None)
 BUNNY_ACCESS_KEY = os.getenv("BUNNY_ACCESS_KEY", None)
+
+ENABLE_BARCODELOOKUP_CACHE = os.getenv("ENABLE_BARCODELOOKUP_CACHE", "false").lower() == "true"
+ENABLE_OPENAI_CACHE = os.getenv("ENABLE_OPENAI_CACHE", "false").lower() == "true"
