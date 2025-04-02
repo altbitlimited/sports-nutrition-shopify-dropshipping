@@ -17,3 +17,5 @@ python -m core.tasks.enrich_products_images enrich_products_images
 
 python -m core.tasks.enrich_products_ai enrich_products_ai
 python -m core.tasks.enrich_products_ai enrich_products_ai --barcodes 857640006424
+
+python -m scripts.test_generate_listing --barcode 857640006172 --shop supplementsteststore.myshopify.com

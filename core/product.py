@@ -221,6 +221,11 @@ class Product:
     def get_selling_price_for_shop(self, shop: Shop):
         best_supplier = self.get_best_supplier_for_shop(shop)
         if not best_supplier:
+            self.log_action(
+                event="selling_price_not_found",
+                level="debug",
+                data={"message": "❌ No valid supplier found for price."}
+            )
             return None
 
         margin = shop.get_setting("profit_margin", 1.5)
@@ -228,6 +233,32 @@ class Product:
         base_price = best_supplier["price"] * margin
         rounded_price = round(base_price) + rounding - 1 if rounding else round(base_price, 2)
         return round(rounded_price, 2)
+
+    def get_stock_level_for_shop(self, shop: Shop) -> int:
+        """
+        Determines the stock level for the best supplier for this product
+        based on the shop's settings (exclusions, stock availability, etc.).
+        """
+        best_supplier = self.get_best_supplier_for_shop(shop)
+        if not best_supplier:
+            self.log_action(
+                event="stock_level_not_found",
+                level="debug",
+                data={"message": "❌ No valid supplier found for stock level."}
+            )
+            return 0
+
+        stock_level = best_supplier.get("stock_level", 0)
+        self.log_action(
+            event="stock_level_fetched",
+            level="debug",
+            data={
+                "supplier": best_supplier.get("name"),
+                "stock_level": stock_level,
+                "message": f"📦 Stock level from best supplier: {stock_level}"
+            }
+        )
+        return stock_level
 
     def has_been_listed_to_shop(self, shop: Shop) -> bool:
         for entry in self.product.get("shops", []):
@@ -272,6 +303,151 @@ class Product:
     def get_brand(self):
         return self.product.get("barcode_lookup_data", {}).get("brand") or \
                self.product.get("barcode_lookup_data", {}).get("manufacturer")
+
+    # TODO I think published should be a shop level setting
+    def generate_shopify_payload(self, shop: Shop, published = True) -> dict | None:
+        """
+        Generates a Shopify GraphQL-compatible product payload for the given shop.
+        Returns None if the product is not enriched or eligible for listing.
+        """
+        if not self.is_enriched_for_listing() or not self.is_product_eligible(shop):
+            self.log_action(
+                event="shopify_payload_generation_skipped",
+                level="debug",
+                data={"shop": shop.domain, "message": "Product is not eligible or fully enriched."}
+            )
+            return None
+
+        ai = self.product.get("ai_generated_data", {})
+        lookup = self.product.get("barcode_lookup_data", {})
+        image_urls = self.product.get("image_urls", [])
+
+        best_supplier = self.get_best_supplier_for_shop(shop)
+        selling_price = self.get_selling_price_for_shop(shop)
+        stock_level = self.get_stock_level_for_shop(shop)
+
+        if not best_supplier or selling_price is None or stock_level is None:
+            self.log_action(
+                event="shopify_payload_generation_failed",
+                level="warning",
+                data={"message": "Missing supplier or pricing data."}
+            )
+            return None
+
+        # Construct description HTML
+        description = ai.get("description", "").strip()
+        if description.startswith("<p>"):
+            description = description[3:]
+        if description.endswith("</p>"):
+            description = description[:-4]
+
+        body_html = f"<p>{description}</p>"
+
+        if suggested := ai.get("suggested_use"):
+            body_html += f"<h3>Suggested Use</h3><p>{suggested}</p>"
+
+        if ingredients := ai.get("ingredients"):
+            body_html += f"<h3>Ingredients</h3><p>{', '.join(ingredients)}</p>"
+
+        if nutrition := ai.get("nutritional_facts"):
+            nutrition_lines = [f"{n['type']}: {n['amount']}{n['unit']}" for n in nutrition]
+            body_html += "<h3>Nutritional Information</h3><ul>" + "".join(
+                [f"<li>{line}</li>" for line in nutrition_lines]) + "</ul>"
+
+        # Prepare image objects
+        images = [{"src": url} for url in image_urls]
+
+        # Prepare basic product payload
+        product_payload = {
+            "published": published,
+            "title": ai["title"],
+            "bodyHtml": body_html,
+            "vendor": self.get_brand(),
+            "productType": ai["product_type"],
+            "tags": ai.get("tags", []),
+            "variants": [
+                {
+                    "price": selling_price,
+                    "sku": lookup.get("mpn", ""),
+                    "barcode": self.barcode,
+                    "inventoryQuantity": stock_level,
+                    "inventoryManagement": "SHOPIFY",
+                    "inventoryPolicy": "deny"
+                }
+            ],
+            "images": images,
+            "seo": {
+                "title": ai.get("seo_title", ai["title"]),
+                "description": ai.get("seo_description", "")
+            },
+            "metafields": []
+        }
+
+        # Optional SEO keywords as metafield
+        if keywords := ai.get("seo_keywords"):
+            product_payload["metafields"].append({
+                "namespace": "seo",
+                "key": "keywords",
+                "value": ", ".join(keywords),
+                "type": "single_line_text_field"
+            })
+
+        if ai.get("snippet"):
+            product_payload["metafields"].append({
+                "key": "snippet",
+                "namespace": "seo",
+                "type": "multi_line_text_field",
+                "value": ai["snippet"]
+            })
+
+        # Ingredients + Nutrition as metafields
+        if ingredients:
+            product_payload["metafields"].append({
+                "namespace": "nutrition",
+                "key": "ingredients",
+                "value": ", ".join(ingredients),
+                "type": "multi_line_text_field"
+            })
+        if nutrition:
+            facts = "\n".join([f"{n['type']}: {n['amount']}{n['unit']}" for n in nutrition])
+            product_payload["metafields"].append({
+                "namespace": "nutrition",
+                "key": "facts",
+                "value": facts,
+                "type": "multi_line_text_field"
+            })
+        if suggested:
+            product_payload["metafields"].append({
+                "namespace": "usage",
+                "key": "suggested_use",
+                "value": suggested,
+                "type": "multi_line_text_field"
+            })
+
+        # Handle collections
+        collections = []
+        if primary := ai.get("primary_collection"):
+            collections.append(primary)
+        if secondary := ai.get("secondary_collections", []):
+            collections.extend(secondary)
+
+        if collections:
+            product_payload["collections"] = collections
+
+        self.log_action(
+            event="shopify_payload_generated",
+            level="info",
+            data={
+                "shop": shop.domain,
+                "message": "✅ Shopify product payload successfully generated.",
+                "price": selling_price,
+                "stock_level": stock_level,
+                "collections": collections,
+                "supplier": best_supplier["name"]
+            }
+        )
+
+        return product_payload
 
     def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
         logger.log(
