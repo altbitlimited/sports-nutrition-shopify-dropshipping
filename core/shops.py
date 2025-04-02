@@ -19,6 +19,12 @@ class Shops:
             task_id=task_id
         )
 
+    def get_by_domain(self, shop_domain: str) -> Shop | None:
+        shop_data = self.collection.find_one({"shop": shop_domain})
+        if shop_data:
+            return Shop(shop_domain)
+        return None
+
     def get_all_shops(self):
         shops = list(self.collection.find())
         self.log_action(
@@ -73,7 +79,8 @@ class Shops:
             "shop": shop_domain,
             "access_token": None,
             "scopes": [],
-            "settings": defaults
+            "settings": defaults,
+            "collections": []
         })
 
         self.log_action(
@@ -84,4 +91,63 @@ class Shops:
                 "message": "✨ New shop created with default settings."
             }
         )
+        return True
+
+    def delete_shop(self, shop_domain: str, cleanup_related: bool = True):
+        shop_record = self.collection.find_one({"shop": shop_domain})
+
+        if not shop_record:
+            self.log_action(
+                event="shop_delete_not_found",
+                level="warning",
+                data={
+                    "shop": shop_domain,
+                    "message": "⚠️ Attempted to delete a shop that doesn't exist."
+                }
+            )
+            return False
+
+        self.collection.delete_one({"shop": shop_domain})
+
+        self.log_action(
+            event="shop_deleted",
+            level="warning",
+            data={
+                "shop": shop_domain,
+                "message": "🗑️ Shop deleted from database."
+            }
+        )
+
+        if cleanup_related:
+            mongo = self.mongo
+
+            # ❌ Remove this shop from all products' "shops" array
+            result_products = mongo.products.update_many(
+                {"shops.shop": shop_domain},
+                {"$pull": {"shops": {"shop": shop_domain}}}
+            )
+
+            self.log_action(
+                event="shop_references_removed_from_products",
+                level="info",
+                data={
+                    "shop": shop_domain,
+                    "modified_count": result_products.modified_count,
+                    "message": f"🧼 Removed shop references from {result_products.modified_count} products."
+                }
+            )
+
+            # ❌ Remove logs for this shop
+            result_logs = mongo.logs.delete_many({"store": shop_domain})
+
+            self.log_action(
+                event="shop_logs_deleted",
+                level="info",
+                data={
+                    "shop": shop_domain,
+                    "deleted_logs": result_logs.deleted_count,
+                    "message": f"🧹 Deleted {result_logs.deleted_count} logs related to this shop."
+                }
+            )
+
         return True

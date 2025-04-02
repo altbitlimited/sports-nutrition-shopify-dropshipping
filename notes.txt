@@ -21,3 +21,5 @@ python -m core.tasks.enrich_products_ai enrich_products_ai --barcodes 8100282925
 python -m core.tasks.flag_products_to_create flag_products_to_create
 
 python -m scripts.test_generate_listing --barcode 810028292598 --shop supplementsteststore.myshopify.com
+python -m scripts.test_create_shopify_product --barcode 850001610292 --shop supplementsteststore.myshopify.com
+python -m scripts.test_update_shop_collections --shop supplementsteststore.myshopify.com

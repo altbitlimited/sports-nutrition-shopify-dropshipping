@@ -6,6 +6,7 @@ from datetime import datetime
 from core.exceptions import ProductNotFoundError
 from core.shop import Shop
 from math import ceil, floor
+from core.clients.shopify_client import ShopifyClient, ShopifyGraphQLError
 
 mongo = MongoManager()
 logger = AppLogger(mongo)
@@ -183,17 +184,27 @@ class Product:
             self.product.get("images_status") == "success",
             self.product.get("ai_generate_status") == "success",
         ]):
-            self.log_action(event="product_not_eligible_enrichment_incomplete", level="debug", data={"message": "⚠️ Enrichment incomplete."})
+            self.log_action(
+                event="product_not_eligible_enrichment_incomplete",
+                level="debug",
+                data={"message": "⚠️ Enrichment incomplete."}
+            )
             return False
 
-        if not self.product.get("image_urls"):
-            self.log_action(event="product_not_eligible_missing_images", level="debug", data={"message": "🚫 No image URLs present."})
-            return False
+        if not self.get_image_urls():
+            self.log_action(
+                event="product_missing_images_but_continuing",
+                level="warning",
+                data={"message": "⚠️ Product has no image URLs but will be considered eligible."}
+            )
 
         brand = self.get_brand()
-
         if brand.lower() in shop.get_excluded_brands():
-            self.log_action(event="product_not_eligible_excluded_brand", level="debug", data={"brand": brand, "message": "🚫 Brand excluded."})
+            self.log_action(
+                event="product_not_eligible_excluded_brand",
+                level="debug",
+                data={"brand": brand, "message": "🚫 Brand excluded."}
+            )
             return False
 
         for supplier in self.product.get("suppliers", []):
@@ -204,7 +215,11 @@ class Product:
             if parsed.get("price", 0) > 0:
                 return True
 
-        self.log_action(event="product_not_eligible_no_valid_supplier", level="debug", data={"message": "🚫 No usable suppliers with stock and price."})
+        self.log_action(
+            event="product_not_eligible_no_valid_supplier",
+            level="debug",
+            data={"message": "🚫 No usable suppliers with stock and price."}
+        )
         return False
 
     def get_best_supplier_for_shop(self, shop: Shop, log_fallback = True):
@@ -370,8 +385,8 @@ class Product:
             listing_data["selling_price"] = None
             listing_data["shopify_id"] = None
             listing_data["shopify_url"] = None
-            listing_data["last_sync_attempt_at"] = None
-            listing_data["last_sync_status"] = None
+            listing_data["shopify_variant_id"] = None
+            listing_data["shopify_handle"] = None
             mongo.db.products.update_one(
                 {"barcode": self.barcode},
                 {"$push": {"shops": listing_data}}
@@ -426,12 +441,11 @@ class Product:
         return self.product.get("barcode_lookup_data", {}).get("brand") or \
                self.product.get("barcode_lookup_data", {}).get("manufacturer")
 
+    def get_image_urls(self):
+        return self.product.get("image_urls") or []
+
     # TODO I think published should be a shop level setting
-    def generate_shopify_payload(self, shop: Shop, published = True) -> dict | None:
-        """
-        Generates a Shopify GraphQL-compatible product payload for the given shop.
-        Returns None if the product is not enriched or eligible for listing.
-        """
+    def generate_shopify_payload(self, shop: Shop, published=True) -> dict | None:
         if not self.is_enriched_for_listing() or not self.is_product_eligible(shop):
             self.log_action(
                 event="shopify_payload_generation_skipped",
@@ -442,162 +456,229 @@ class Product:
 
         ai = self.product.get("ai_generated_data", {})
         lookup = self.product.get("barcode_lookup_data", {})
-        image_urls = self.product.get("image_urls", [])
 
-        best_supplier = self.get_best_supplier_for_shop(shop)
-
-        if not best_supplier:
-            self.log_action(
-                event="shopify_payload_generation_failed",
-                level="warning",
-                data={"message": "🏪 Missing supplier."}
-            )
-            return None
-
-        selling_price =self.get_selling_price_for_shop(shop)
-        stock_level = self.get_stock_level_for_shop(shop)
-
-        if selling_price is None:
-            self.log_action(
-                event="shopify_payload_generation_failed",
-                level="warning",
-                data={"message": "💲 Missing pricing data."}
-            )
-            return None
-
-        if stock_level is None:
-            self.log_action(
-                event="shopify_payload_generation_failed",
-                level="warning",
-                data={"message": "📦 Missing stock level data."}
-            )
-            return None
-
-        # Construct description HTML
-        description = ai.get("description", "").strip()
-        if description.startswith("<p>"):
-            description = description[3:]
-        if description.endswith("</p>"):
-            description = description[:-4]
+        # Build body HTML
+        description = (ai.get("description", "") or "").strip()
+        if description.startswith("<p>"): description = description[3:]
+        if description.endswith("</p>"): description = description[:-4]
 
         body_html = f"<p>{description}</p>"
-
         if suggested := ai.get("suggested_use"):
             body_html += f"<h3>Suggested Use</h3><p>{suggested}</p>"
-
         if ingredients := ai.get("ingredients"):
-            body_html += f"<h3>Ingredients</h3><p>{', '.join(ingredients)}</p>"
-
+            body_html += f"<h3>Ingredients</h3><p>{', '.join(filter(None, ingredients))}</p>"
+        nutrition_lines = []
         if nutrition := ai.get("nutritional_facts"):
-            nutrition_lines = [f"{n['type']}: {n['amount']}{n['unit']}" for n in nutrition]
+            nutrition_lines = [f"{n['type']}: {n['amount']}{n['unit']}"
+                               for n in nutrition if n.get("type") and n.get("amount") and n.get("unit")]
             body_html += "<h3>Nutritional Information</h3><ul>" + "".join(
                 [f"<li>{line}</li>" for line in nutrition_lines]) + "</ul>"
 
-        # Prepare image objects
-        images = [{"src": url} for url in image_urls]
-
-        # Prepare basic product payload
-        product_payload = {
+        payload = {
             "published": published,
-            "title": ai["title"],
-            "bodyHtml": body_html,
-            "vendor": self.get_brand(),
-            "productType": ai["product_type"],
+            "title": ai.get("title", "Untitled Product"),
+            "descriptionHtml": body_html,
+            "vendor": self.get_brand() or "Unknown",
+            "productType": ai.get("product_type", "Misc"),
             "tags": ai.get("tags", []),
-            "variants": [
-                {
-                    "price": selling_price,
-                    "sku": lookup.get("mpn", ""),
-                    "barcode": self.barcode,
-                    "inventoryQuantity": stock_level,
-                    "inventoryManagement": "SHOPIFY",
-                    "inventoryPolicy": "deny"
-                }
-            ],
-            "images": images,
-            "seo": {
-                "title": ai.get("seo_title", ai["title"]),
-                "description": ai.get("seo_description", "")
-            },
             "metafields": []
         }
 
-        # Optional SEO keywords as metafield
-        if keywords := ai.get("seo_keywords"):
-            product_payload["metafields"].append({
-                "namespace": "seo",
-                "key": "keywords",
-                "value": ", ".join(keywords),
-                "type": "single_line_text_field"
+        def meta(key, ns, val, typ):
+            payload["metafields"].append({
+                "key": key, "namespace": ns, "value": val, "type": typ
             })
 
-        if ai.get("snippet"):
-            product_payload["metafields"].append({
-                "key": "snippet",
-                "namespace": "seo",
-                "type": "multi_line_text_field",
-                "value": ai["snippet"]
-            })
+        if ai.get("seo_title"): meta("title", "seo", ai["seo_title"], "single_line_text_field")
+        if ai.get("seo_description"): meta("description", "seo", ai["seo_description"], "multi_line_text_field")
+        if ai.get("seo_keywords"): meta("keywords", "seo", ", ".join(ai["seo_keywords"]), "single_line_text_field")
+        if ai.get("snippet"): meta("snippet", "seo", ai["snippet"], "multi_line_text_field")
+        if ingredients: meta("ingredients", "nutrition", ", ".join(ingredients), "multi_line_text_field")
+        if nutrition_lines: meta("facts", "nutrition", "\n".join(nutrition_lines), "multi_line_text_field")
+        if suggested: meta("suggested_use", "usage", suggested, "multi_line_text_field")
 
-        # Ingredients + Nutrition as metafields
-        if ingredients:
-            product_payload["metafields"].append({
-                "namespace": "nutrition",
-                "key": "ingredients",
-                "value": ", ".join(ingredients),
-                "type": "multi_line_text_field"
-            })
-        if nutrition:
-            facts = "\n".join([f"{n['type']}: {n['amount']}{n['unit']}" for n in nutrition])
-            product_payload["metafields"].append({
-                "namespace": "nutrition",
-                "key": "facts",
-                "value": facts,
-                "type": "multi_line_text_field"
-            })
-        if suggested:
-            product_payload["metafields"].append({
-                "namespace": "usage",
-                "key": "suggested_use",
-                "value": suggested,
-                "type": "multi_line_text_field"
-            })
+        self.log_action("shopify_payload_generated", "info", {
+            "shop": shop.domain, "message": "✅ Shopify product payload generated"
+        })
+        return payload
 
-        # Handle collections
-        collections = []
-        if primary := ai.get("primary_collection"):
-            collections.append(primary)
-        if secondary := ai.get("secondary_collections", []):
-            collections.extend(secondary)
+    def generate_variant_payload(self, shop: Shop, product_id: str) -> dict | None:
+        lookup = self.product.get("barcode_lookup_data", {})
+        best_supplier = self.get_best_supplier_for_shop(shop)
 
-        if collections:
-            product_payload["collections"] = collections
+        if not best_supplier:
+            self.log_action("variant_generation_failed", "warning", {
+                "message": "❌ No best supplier."
+            })
+            return None
 
-        self.log_action(
-            event="shopify_payload_generated",
-            level="info",
-            data={
-                "shop": shop.domain,
-                "message": "✅ Shopify product payload successfully generated.",
-                "price": selling_price,
-                "stock_level": stock_level,
-                "collections": collections,
-                "supplier": best_supplier["supplier_name"]
+        selling_price = self.get_selling_price_for_shop(shop)
+        if selling_price is None:
+            return None
+
+        payload = {
+            "productId": product_id,
+            "sku": lookup.get("mpn", ""),
+            "barcode": self.barcode,
+            "price": str(round(selling_price, 2)),
+            "inventoryItem": {
+                "tracked": True
             }
-        )
+        }
 
-        if stock_level == 0:
-            self.log_action(
-                event="shopify_payload_generated_zero_stock",
-                level="warning",
-                data={
-                    "shop": shop.domain,
-                    "supplier": best_supplier["supplier_name"],
-                    "message": "⚠️ Shopify payload generated with stock level 0"
-                }
+        self.log_action("shopify_variant_payload_generated", "info", {
+            "shop": shop.domain,
+            "product_id": product_id,
+            "price": selling_price
+        })
+        return payload
+
+    def create_on_shopify(self, shop: Shop, task_id: str = None) -> dict:
+        self.log_action("shopify_create_flow_started", "info", {
+            "shop": shop.domain,
+            "message": "🚀 Starting Shopify product creation flow."
+        }, task_id=task_id)
+
+        shopify = ShopifyClient(shop)
+        product_payload = self.generate_shopify_payload(shop)
+
+        if not product_payload:
+            raise Exception("Product payload generation failed.")
+
+        response = shopify.create_product(product_payload, task_id=task_id)
+        product_id = response["id"]
+        handle = response.get("handle")
+        url = f"https://{shop.domain}/products/{handle}" if handle else None
+
+        variant_edges = response.get("variants", {}).get("edges", [])
+        if not variant_edges:
+            raise Exception("❌ No default variant found after product creation.")
+
+        variant_id = variant_edges[0]["node"]["id"]
+
+        # 🔁 Memoize common supplier/price values
+        best_supplier = self.get_best_supplier_for_shop(shop)
+        if not best_supplier:
+            raise Exception("❌ No valid supplier found.")
+
+        selling_price = self.get_selling_price_for_shop(shop)
+        if selling_price is None:
+            raise Exception("❌ Selling price missing; cannot update variant.")
+
+        sku = self.product.get("barcode_lookup_data", {}).get("mpn", "")
+
+        # 💵 Update variant
+        shopify.update_variant_bulk(product_id, {
+            "id": variant_id,
+            "price": str(selling_price),
+            "inventoryItem": {
+                "sku": sku,
+                "tracked": True
+            }
+        }, task_id=task_id)
+
+        # ✅ Log + mark listed
+        self.log_action("shopify_create_flow_completed", "success", {
+            "shop": shop.domain,
+            "product_id": product_id,
+            "variant_id": variant_id,
+            "handle": handle,
+            "url": url,
+            "message": "✅ Product and variant successfully created on Shopify."
+        }, task_id=task_id)
+
+        self.mark_listed_to_shop(shop, {
+            "status": "created",
+            "shopify_id": product_id,
+            "shopify_url": url,
+            "shopify_variant_id": variant_id,
+            "shopify_handle": handle,
+            "supplier": best_supplier["supplier_name"],
+            "cost": best_supplier["price"],
+            "stock_level": best_supplier.get("stock_level", 0),
+            "selling_price": selling_price,
+            "margin_used": shop.get_setting("profit_margin", 1.5),
+            "rounding_used": shop.get_setting("rounding", 0.99),
+            "round_to": shop.get_setting("round_to", "closest")
+        })
+
+        # 📚 Collections from AI
+        ai = self.product.get("ai_generated_data", {})
+        primary = ai.get("primary_collection")
+        secondary = ai.get("secondary_collections", [])
+        collection_names = list(set(filter(None, [primary] + secondary)))
+
+        for name in collection_names:
+            success = shop.add_product_to_collection(
+                product_id=product_id,
+                handle=name,
+                task_id=task_id
             )
 
-        return product_payload
+            if not success:
+                self.log_action("collection_match_not_found", "debug", {
+                    "handle": name,
+                    "title": None,
+                    "message": "❌ No collection found via fuzzy or exact match."
+                }, task_id=task_id)
+
+                try:
+                    created = shop.client.create_collection(title=name, task_id=task_id)
+
+                    # 🔃 Patch local collections cache in memory
+                    shop.shop.setdefault("collections", []).append({
+                        "id": created["id"],
+                        "title": created["title"],
+                        "handle": created["handle"]
+                    })
+
+                    retry_success = shop.add_product_to_collection(
+                        product_id=product_id,
+                        handle=name,
+                        task_id=task_id
+                    )
+
+                    if retry_success:
+                        self.log_action("collection_created_and_added", "info", {
+                            "collection": name,
+                            "product_id": product_id,
+                            "collection_id": created["id"]
+                        }, task_id=task_id)
+                    else:
+                        self.log_action("collection_create_retry_failed", "warning", {
+                            "collection": name,
+                            "product_id": product_id,
+                            "message": "❌ Created collection but failed to add product."
+                        }, task_id=task_id)
+
+                except Exception as e:
+                    self.log_action("collection_create_failed", "error", {
+                        "collection": name,
+                        "product_id": product_id,
+                        "message": "❌ Failed to create collection.",
+                        "error": str(e)
+                    }, task_id=task_id)
+
+        return {
+            "product_id": product_id,
+            "variant_id": variant_id,
+            "handle": handle,
+            "url": url
+        }
+
+    def add_to_collection(self, shop: Shop, collection_id: str, task_id=None):
+        shopify = shop.client
+        shopify_id = None
+
+        for entry in self.product.get("shops", []):
+            if entry.get("shop") == shop.domain:
+                shopify_id = entry.get("shopify_id")
+                break
+
+        if not shopify_id:
+            raise Exception(f"Product not listed to {shop.domain}")
+
+        return shopify.add_product_to_collection(collection_id, [shopify_id], task_id=task_id)
 
     def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
         logger.log(
