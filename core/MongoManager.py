@@ -64,6 +64,16 @@ class MongoManager:
         )
         self._safe_create_index(
             self.products,
+            [("shops.shop.status", ASCENDING)],
+            "product_shops_shop_status_index"
+        )
+        self._safe_create_index(
+            self.products,
+            [("shops.shop.shop", ASCENDING), ("shops.shop.status", ASCENDING)],
+            "product_shops_shop_shop_status_index"
+        )
+        self._safe_create_index(
+            self.products,
             [
                 ("ai_generate_status", ASCENDING),
                 ("barcode_lookup_status", ASCENDING),
