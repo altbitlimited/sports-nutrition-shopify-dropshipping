@@ -5,6 +5,7 @@ from core.Logger import AppLogger
 from datetime import datetime
 from core.exceptions import ProductNotFoundError
 from core.shop import Shop
+from math import ceil, floor
 
 mongo = MongoManager()
 logger = AppLogger(mongo)
@@ -206,21 +207,47 @@ class Product:
         self.log_action(event="product_not_eligible_no_valid_supplier", level="debug", data={"message": "🚫 No usable suppliers with stock and price."})
         return False
 
-    def get_best_supplier_for_shop(self, shop: Shop):
-        valid_suppliers = []
+    def get_best_supplier_for_shop(self, shop: Shop, log_fallback = True):
+        excluded = set(shop.get_excluded_suppliers())
+        in_stock = []
+        out_of_stock = []
+
         for supplier in self.product.get("suppliers", []):
             name = supplier.get("name")
-            parsed = supplier.get("parsed", {})
-            if name in shop.get_excluded_suppliers():
+            if name in excluded:
                 continue
-            if parsed.get("price", 0) > 0:
-                valid_suppliers.append({"name": name, **parsed})
 
-        best = min(valid_suppliers, key=lambda s: s["price"], default=None)
+            parsed = supplier.get("parsed", {})
+            price = parsed.get("price")
+            stock = parsed.get("stock_level", 0)
+
+            if price and price > 0:
+                enriched = {"supplier_name": name, **parsed}
+                if stock > 0:
+                    in_stock.append(enriched)
+                else:
+                    out_of_stock.append(enriched)
+
+        best = min(in_stock, key=lambda s: s["price"], default=None)
+        if not best:
+            best = min(out_of_stock, key=lambda s: s["price"], default=None)
+            if best:
+                if log_fallback:
+                    self.log_action(
+                        event="best_supplier_fallback_zero_stock",
+                        level="debug",
+                        data={
+                            "supplier": best["supplier_name"],
+                            "price": best["price"],
+                            "stock_level": best["stock_level"],
+                            "message": "⚠️ Falling back to zero stock supplier for best price."
+                        }
+                    )
+
         return best
 
     def get_selling_price_for_shop(self, shop: Shop):
-        best_supplier = self.get_best_supplier_for_shop(shop)
+        best_supplier = self.get_best_supplier_for_shop(shop, False)
         if not best_supplier:
             self.log_action(
                 event="selling_price_not_found",
@@ -231,10 +258,37 @@ class Product:
 
         margin = shop.get_setting("profit_margin", 1.5)
         rounding = shop.get_setting("rounding", 0.99)
+        round_to = shop.get_setting("round_to", 'closest')
         base_price = best_supplier["price"] * margin
         # Round up to nearest integer, then adjust to end in specified decimal (e.g., .99)
         # Example: base_price 22.43, rounding 0.99 → 22 + 0.99 = 22.99
-        rounded_price = round(base_price) + rounding - 1 if rounding else round(base_price, 2)
+
+        if rounding:
+            match round_to:
+                case "up":
+                    rounded_price = ceil(base_price) + rounding - 1
+                case "down":
+                    rounded_price = floor(base_price) + rounding - 1
+                case _:
+                    # Default case, will also catch 'closest'
+                    rounded_price = round(base_price) + rounding - 1
+        else:
+            rounded_price = round(base_price, 2)
+
+        self.log_action(
+            event="selling_price_calculated",
+            level="info",
+            data={
+                "message": "💲 Selling price calculated.",
+                "best_supplier_price": best_supplier["price"],
+                "margin": margin,
+                "rounding": rounding,
+                "round_to": round_to,
+                "base_price": base_price,
+                "rounded_price": rounded_price,
+            }
+        )
+
         return round(rounded_price, 2)
 
     def get_stock_level_for_shop(self, shop: Shop) -> int:
@@ -242,7 +296,8 @@ class Product:
         Determines the stock level for the best supplier for this product
         based on the shop's settings (exclusions, stock availability, etc.).
         """
-        best_supplier = self.get_best_supplier_for_shop(shop)
+        best_supplier = self.get_best_supplier_for_shop(shop, False)
+
         if not best_supplier:
             self.log_action(
                 event="stock_level_not_found",
@@ -256,7 +311,7 @@ class Product:
             event="stock_level_fetched",
             level="debug",
             data={
-                "supplier": best_supplier.get("name"),
+                "supplier": best_supplier.get("supplier_name"),
                 "stock_level": stock_level,
                 "message": f"📦 Stock level from best supplier: {stock_level}"
             }
@@ -269,17 +324,81 @@ class Product:
                 return True
         return False
 
-    def mark_listed_to_shop(self, shop: Shop, listing_data: dict):
-        listing_data.update({
-            "shop": shop.domain,
-            "created_at": datetime.utcnow(),
-            "updated_at": datetime.utcnow()
-        })
+    def _upsert_shop_listing(self, shop: Shop, listing_data: dict):
+        """
+        Inserts or updates a listing entry in the 'shops' array of the product document.
+        If an entry for the shop exists, it updates it. Otherwise, inserts a new one.
+        Automatically adds useful defaults for known statuses like 'create_pending'.
+        """
+        now = datetime.utcnow()
+        listing_data["shop"] = shop.domain
+        listing_data["updated_at"] = now
 
-        mongo.db.products.update_one(
-            {"barcode": self.barcode},
-            {"$push": {"shops": listing_data}}
-        )
+        existing_entry = next((s for s in self.product.get("shops", []) if s["shop"] == shop.domain), None)
+
+        if existing_entry:
+            listing_data["created_at"] = existing_entry.get("created_at", now)
+
+            result = mongo.db.products.update_one(
+                {"barcode": self.barcode},
+                {"$set": {"shops.$[elem]": listing_data}},
+                array_filters=[{"elem.shop": shop.domain}]
+            )
+
+            if result.modified_count == 0:
+                self.log_action(
+                    event="shop_listing_update_fallback_triggered",
+                    level="warning",
+                    data={"shop": shop.domain, "message": "⚠️ Fallback triggered while updating shop listing."}
+                )
+                mongo.db.products.update_one(
+                    {"barcode": self.barcode},
+                    {"$pull": {"shops": {"shop": shop.domain}}}
+                )
+                mongo.db.products.update_one(
+                    {"barcode": self.barcode},
+                    {"$push": {"shops": listing_data}}
+                )
+        else:
+            listing_data["created_at"] = now
+            listing_data["supplier"] = None
+            listing_data["cost"] = None
+            listing_data["stock_level"] = None
+            listing_data["margin_used"] = None
+            listing_data["rounding_used"] = None
+            listing_data["round_to"] = None
+            listing_data["selling_price"] = None
+            listing_data["shopify_id"] = None
+            listing_data["shopify_url"] = None
+            listing_data["last_sync_attempt_at"] = None
+            listing_data["last_sync_status"] = None
+            mongo.db.products.update_one(
+                {"barcode": self.barcode},
+                {"$push": {"shops": listing_data}}
+            )
+            self.log_action(
+                event="shop_listing_created",
+                level="info",
+                data={"shop": shop.domain, "status": listing_data["status"], "message": "✨ New listing entry created for shop."}
+            )
+
+        # Update local in-memory product
+        self.product.setdefault("shops", [])
+        updated = False
+        for i, entry in enumerate(self.product["shops"]):
+            if entry["shop"] == shop.domain:
+                self.product["shops"][i] = listing_data
+                updated = True
+                break
+        if not updated:
+            self.product["shops"].append(listing_data)
+
+    def mark_listed_to_shop(self, shop: Shop, listing_data: dict):
+        """
+        Public-facing method to mark a product as listed to a specific shop,
+        delegating the heavy lifting to _upsert_shop_listing.
+        """
+        self._upsert_shop_listing(shop, listing_data)
 
         self.log_action(
             event="product_marked_as_listed",
@@ -287,7 +406,7 @@ class Product:
             data={
                 "shop": shop.domain,
                 "listing_data": listing_data,
-                "message": "🛒 Product marked as listed to shop."
+                "message": "📌 Product marked as listed or updated for shop."
             }
         )
 
@@ -326,14 +445,31 @@ class Product:
         image_urls = self.product.get("image_urls", [])
 
         best_supplier = self.get_best_supplier_for_shop(shop)
-        selling_price = self.get_selling_price_for_shop(shop)
-        stock_level = self.get_stock_level_for_shop(shop)
 
-        if not best_supplier or selling_price is None or stock_level is None:
+        if not best_supplier:
             self.log_action(
                 event="shopify_payload_generation_failed",
                 level="warning",
-                data={"message": "Missing supplier or pricing data."}
+                data={"message": "🏪 Missing supplier."}
+            )
+            return None
+
+        selling_price =self.get_selling_price_for_shop(shop)
+        stock_level = self.get_stock_level_for_shop(shop)
+
+        if selling_price is None:
+            self.log_action(
+                event="shopify_payload_generation_failed",
+                level="warning",
+                data={"message": "💲 Missing pricing data."}
+            )
+            return None
+
+        if stock_level is None:
+            self.log_action(
+                event="shopify_payload_generation_failed",
+                level="warning",
+                data={"message": "📦 Missing stock level data."}
             )
             return None
 
@@ -446,7 +582,7 @@ class Product:
                 "price": selling_price,
                 "stock_level": stock_level,
                 "collections": collections,
-                "supplier": best_supplier["name"]
+                "supplier": best_supplier["supplier_name"]
             }
         )
 
@@ -456,7 +592,7 @@ class Product:
                 level="warning",
                 data={
                     "shop": shop.domain,
-                    "supplier": best_supplier["name"],
+                    "supplier": best_supplier["supplier_name"],
                     "message": "⚠️ Shopify payload generated with stock level 0"
                 }
             )

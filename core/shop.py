@@ -1,3 +1,5 @@
+# core/shop.py
+
 from core.MongoManager import MongoManager
 from core.encryption import encrypt_token, decrypt_token
 from core.Logger import AppLogger
@@ -8,7 +10,8 @@ class Shop:
         "exclude_suppliers": [],
         "exclude_brands": [],
         "profit_margin": 1.5,
-        "rounding": 0.99
+        "rounding": 0.99,
+        "round_to": "closest"
     }
 
     def __init__(self, domain: str):
@@ -98,13 +101,36 @@ class Shop:
     def get_setting(self, key: str, default=None):
         keys = key.split(".")
         current = self.shop.get("settings", {})
-        for k in keys:
-            if not isinstance(current, dict):
-                return default
-            current = current.get(k)
-            if current is None:
-                return self.DEFAULT_SETTINGS.get(key, default)
-        return current
+        ref = current
+
+        for k in keys[:-1]:
+            if k not in ref or not isinstance(ref[k], dict):
+                ref[k] = {}
+            ref = ref[k]
+
+        last_key = keys[-1]
+        value = ref.get(last_key)
+
+        if value is not None:
+            return value
+
+        # Fallback to default if missing
+        fallback = self.DEFAULT_SETTINGS.get(key, default)
+
+        # Save fallback into DB and in-memory settings
+        self.set_setting(key, fallback)
+
+        self.log_action(
+            event="shop_setting_autofilled",
+            level="info",
+            data={
+                "key": key,
+                "value": fallback,
+                "message": f"🧩 Missing setting '{key}' was autofilled with default."
+            }
+        )
+
+        return fallback
 
     def set_setting(self, key: str, value):
         keys = key.split(".")

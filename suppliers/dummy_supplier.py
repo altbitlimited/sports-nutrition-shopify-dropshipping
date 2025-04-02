@@ -16,36 +16,46 @@ class DummySupplier(Supplier):
         """
         # Dummy data (mimicking supplier feed)
         self._products = [
-            {
-                "ean": "857640006424",
-                "name": "Dummy Product 1",
-                "stock_count": 100,
-                "price": 25.00,
-                "product_code": "XYZ123",
-                "brand": "Brand A",
-                "weight": "900g",
-                "other_data": "something"
-            },
-            {
-                "ean": "810028293847",
-                "name": "Dummy Product 2",
-                "stock_count": 10,
-                "price": 3.00,
-                "product_code": "XYZ124",
-                "brand": "Brand B",
-                "weight": "200g",
-                "other_data": "something"
-            },
-            {
-                "ean": "857640006158",
-                "name": "Dummy Product 3",
-                "stock_count": 55,
-                "price": 30.00,
-                "product_code": "XYZ125",
-                "brand": "Brand C",
-                "weight": "700g",
-                "other_data": "something"
-            },
+            # {
+            #     "ean": "810028292598",
+            #     "name": "Dummy Product 1",
+            #     "stock_count": 100,
+            #     "price": 25.00,
+            #     "product_code": "XYZ123",
+            #     "brand": "Ghost",
+            #     "weight": "900g",
+            #     "other_data": "something"
+            # },
+            # {
+            #     "ean": "857640006424",
+            #     "name": "Dummy Product 1",
+            #     "stock_count": 100,
+            #     "price": 25.00,
+            #     "product_code": "XYZ123",
+            #     "brand": "Brand A",
+            #     "weight": "900g",
+            #     "other_data": "something"
+            # },
+            # {
+            #     "ean": "810028293847",
+            #     "name": "Dummy Product 2",
+            #     "stock_count": 10,
+            #     "price": 3.00,
+            #     "product_code": "XYZ124",
+            #     "brand": "Brand B",
+            #     "weight": "200g",
+            #     "other_data": "something"
+            # },
+            # {
+            #     "ean": "857640006158",
+            #     "name": "Dummy Product 3",
+            #     "stock_count": 55,
+            #     "price": 30.00,
+            #     "product_code": "XYZ125",
+            #     "brand": "Brand C",
+            #     "weight": "700g",
+            #     "other_data": "something"
+            # },
         ]
 
         # and populate our dummy parsed data

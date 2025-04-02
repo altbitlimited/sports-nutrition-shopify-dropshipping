@@ -30,4 +30,7 @@
   name = "enrich_products_ai"
   schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
   command = "python3 core/tasks/enrich_products_ai.py enrich_products_ai"
-
+[[cron]]
+  name = "flag_products_to_create"
+  schedule = "0 5 * * *"
+  command = "python3 core/tasks/flag_products_to_create.py flag_products_to_create"
