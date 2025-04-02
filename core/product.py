@@ -3,7 +3,8 @@
 from core.MongoManager import MongoManager
 from core.Logger import AppLogger
 from datetime import datetime
-from core.exceptions import ProductNotFoundError  # Import the custom exception
+from core.exceptions import ProductNotFoundError
+from core.shop import Shop
 
 mongo = MongoManager()
 logger = AppLogger(mongo)
@@ -14,28 +15,20 @@ class Product:
         self.product = self.get_product()
 
     def get_product(self):
-        """
-        Retrieve the product from the database by barcode and automatically populate.
-        If the product is not found, raise an exception.
-        """
         try:
             product = mongo.db.products.find_one({"barcode": self.barcode})
             if not product:
                 raise ProductNotFoundError(self.barcode)
             return product
         except Exception as e:
-            logger.log(
+            self.log_action(
                 event="mongodb_error",
                 level="error",
-                data={"barcode": self.barcode, "message": f"Error fetching product: {str(e)}"}
+                data={"message": f"Error fetching product: {str(e)}"}
             )
             raise
 
     def add_supplier(self, supplier_name, supplier_data, supplier_parsed_data):
-        """
-        Adds a new supplier to the product.
-        Logs the action.
-        """
         if not self.product:
             raise ProductNotFoundError(self.barcode)
 
@@ -55,33 +48,25 @@ class Product:
                 }}
             )
 
-            logger.log(
+            self.log_action(
                 event="supplier_added",
-                store=None,
                 level="info",
                 data={
-                    "barcode": self.barcode,
                     "supplier_name": supplier_name,
                     "message": f"🔗 Supplier {supplier_name} added to product."
                 }
             )
         else:
-            logger.log(
+            self.log_action(
                 event="supplier_already_exists",
-                store=None,
                 level="debug",
                 data={
-                    "barcode": self.barcode,
                     "supplier_name": supplier_name,
                     "message": f"Supplier {supplier_name} already linked to product."
                 }
             )
 
     def prune_supplier_link(self, supplier_name):
-        """
-        Removes a supplier link from the product.
-        Logs the action.
-        """
         if not self.product:
             raise ProductNotFoundError(self.barcode)
 
@@ -96,23 +81,19 @@ class Product:
                 }}
             )
 
-            logger.log(
+            self.log_action(
                 event="supplier_removed",
-                store=None,
                 level="info",
                 data={
-                    "barcode": self.barcode,
                     "supplier_name": supplier_name,
-                    "message": f"🧹 Supplier {supplier_name} removed from product."
+                    "message": f"🪩 Supplier {supplier_name} removed from product."
                 }
             )
         else:
-            logger.log(
+            self.log_action(
                 event="supplier_not_found",
-                store=None,
                 level="warning",
                 data={
-                    "barcode": self.barcode,
                     "supplier_name": supplier_name,
                     "message": f"⚠️ Supplier {supplier_name} not found in product."
                 }
@@ -121,10 +102,6 @@ class Product:
     def update_product(self, barcode_lookup_data=None, barcode_lookup_status=None,
                        ai_generated_data=None, ai_generate_status=None,
                        image_urls=None, suppliers=None, images_status=None):
-        """
-        Update the product in the database.
-        Logs the action.
-        """
         if not self.product:
             raise ProductNotFoundError(self.barcode)
 
@@ -158,29 +135,149 @@ class Product:
 
             if result.modified_count > 0:
                 self.product.update(update_data)
-                logger.log(
+                self.log_action(
                     event="product_updated",
-                    store=None,
                     level="success",
-                    data={
-                        "barcode": self.barcode,
-                        "message": f"✅ Product updated successfully."
-                    }
+                    data={"message": "✅ Product updated successfully."}
                 )
             else:
-                logger.log(
+                self.log_action(
                     event="product_no_changes",
-                    store=None,
                     level="debug",
-                    data={
-                        "barcode": self.barcode,
-                        "message": "No changes made to product."
-                    }
+                    data={"message": "No changes made to product."}
                 )
         except Exception as e:
-            logger.log(
+            self.log_action(
                 event="mongodb_error",
                 level="error",
-                data={"barcode": self.barcode, "message": f"Database update failed: {str(e)}"}
+                data={"message": f"Database update failed: {str(e)}"}
             )
             raise Exception(f"Database operation failed: {str(e)}")
+
+    def is_enriched_for_listing(self):
+        data = self.product
+        ai = data.get("ai_generated_data", {})
+        lookup = data.get("barcode_lookup_data", {})
+
+        required_fields = [
+            ai.get("title"),
+            ai.get("description"),
+            ai.get("product_type"),
+            lookup.get("brand") or lookup.get("manufacturer")
+        ]
+
+        is_valid = all(required_fields)
+        if not is_valid:
+            self.log_action(
+                event="product_not_ready",
+                level="debug",
+                data={"message": "⚠️ Product is missing enrichment fields required for listing."}
+            )
+
+        return is_valid
+
+    def is_product_eligible(self, shop: Shop) -> bool:
+        if not all([
+            self.product.get("barcode_lookup_status") == "success",
+            self.product.get("images_status") == "success",
+            self.product.get("ai_generate_status") == "success",
+        ]):
+            self.log_action(event="product_not_eligible_enrichment_incomplete", level="debug", data={"message": "⚠️ Enrichment incomplete."})
+            return False
+
+        if not self.product.get("image_urls"):
+            self.log_action(event="product_not_eligible_missing_images", level="debug", data={"message": "🚫 No image URLs present."})
+            return False
+
+        brand = self.get_brand()
+        if brand in shop.get_excluded_brands():
+            self.log_action(event="product_not_eligible_excluded_brand", level="debug", data={"brand": brand, "message": "🚫 Brand excluded."})
+            return False
+
+        for supplier in self.product.get("suppliers", []):
+            name = supplier.get("name")
+            parsed = supplier.get("parsed", {})
+            if name in shop.get_excluded_suppliers():
+                continue
+            if parsed.get("stock_level", 0) > 0 and parsed.get("price", 0) > 0:
+                return True
+
+        self.log_action(event="product_not_eligible_no_valid_supplier", level="debug", data={"message": "🚫 No usable suppliers with stock and price."})
+        return False
+
+    def get_best_supplier_for_shop(self, shop: Shop):
+        valid_suppliers = []
+        for supplier in self.product.get("suppliers", []):
+            name = supplier.get("name")
+            parsed = supplier.get("parsed", {})
+            if name in shop.get_excluded_suppliers():
+                continue
+            if parsed.get("stock_level", 0) > 0 and parsed.get("price", 0) > 0:
+                valid_suppliers.append({"name": name, **parsed})
+
+        best = min(valid_suppliers, key=lambda s: s["price"], default=None)
+        return best
+
+    def get_selling_price_for_shop(self, shop: Shop):
+        best_supplier = self.get_best_supplier_for_shop(shop)
+        if not best_supplier:
+            return None
+
+        margin = shop.get_setting("profit_margin", 1.5)
+        rounding = shop.get_setting("rounding", 0.99)
+        base_price = best_supplier["price"] * margin
+        rounded_price = round(base_price) + rounding - 1 if rounding else round(base_price, 2)
+        return round(rounded_price, 2)
+
+    def has_been_listed_to_shop(self, shop: Shop) -> bool:
+        for entry in self.product.get("shops", []):
+            if entry.get("shop") == shop.domain:
+                return True
+        return False
+
+    def mark_listed_to_shop(self, shop: Shop, listing_data: dict):
+        listing_data.update({
+            "shop": shop.domain,
+            "created_at": datetime.utcnow(),
+            "updated_at": datetime.utcnow()
+        })
+
+        mongo.db.products.update_one(
+            {"barcode": self.barcode},
+            {"$push": {"shops": listing_data}}
+        )
+
+        self.log_action(
+            event="product_marked_as_listed",
+            level="info",
+            data={
+                "shop": shop.domain,
+                "listing_data": listing_data,
+                "message": "🛒 Product marked as listed to shop."
+            }
+        )
+
+    def unlist_from_shop(self, shop: Shop):
+        mongo.db.products.update_one(
+            {"barcode": self.barcode},
+            {"$pull": {"shops": {"shop": shop.domain}}}
+        )
+
+        self.log_action(
+            event="product_unlisted",
+            level="warning",
+            data={"shop": shop.domain, "message": "🚫 Product unlisted from shop."}
+        )
+
+    def get_brand(self):
+        return self.product.get("barcode_lookup_data", {}).get("brand") or \
+               self.product.get("barcode_lookup_data", {}).get("manufacturer")
+
+    def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
+        logger.log(
+            event=event,
+            store=None,
+            level=level,
+            data={"barcode": self.barcode, **(data or {})},
+            task_id=task_id
+        )

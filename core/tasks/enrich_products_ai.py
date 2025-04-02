@@ -147,7 +147,7 @@ def enrich_product(barcode, task_id=None, stats=None):
             stats["total_cost"] += total_cost
 
     except Exception as e:
-        logger.log_product_error(barcode, str(e), task_id=task_id)
+        product.log_action(str(e), level="error", task_id=task_id)
         product.update_product(ai_generate_status="failed")
         if stats:
             stats["failed"] += 1

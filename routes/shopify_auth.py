@@ -1,23 +1,25 @@
-# routes/shopify_auth.py
-
 from fastapi import APIRouter, Request, HTTPException
 from fastapi.responses import RedirectResponse
 import shopify
 from shopify import AccessScope
+
 from core.config import (
     SHOPIFY_API_KEY,
     SHOPIFY_API_SECRET,
     SHOPIFY_API_VERSION,
     APP_BASE_URL,
 )
-from core.MongoManager import MongoManager
+
 from core.Logger import AppLogger
+from core.shop import Shop
+from core.shops import Shops
 
 router = APIRouter(prefix="/auth/shopify")
-mongo = MongoManager()
-logger = AppLogger(mongo)
 
-DEFAULT_SETTINGS = {}
+logger = AppLogger()
+shops = Shops()
+
+DEFAULT_SETTINGS = {}  # Could eventually hold initial setup values
 
 
 @router.get("/install")
@@ -35,6 +37,7 @@ def install(shop: str):
     scopes = ["read_products", "write_products"]
 
     permission_url = session.create_permission_url(scopes, redirect_uri)
+
     logger.log(
         event="install_redirect",
         level="info",
@@ -56,46 +59,48 @@ def callback(request: Request):
     Detects scope changes on re-installation.
     """
     params = dict(request.query_params)
-    shop = params.get("shop")
+    shop_domain = params.get("shop")
 
-    if not shop:
+    if not shop_domain:
         raise HTTPException(status_code=400, detail="Missing shop parameter")
 
     shopify.Session.setup(api_key=SHOPIFY_API_KEY, secret=SHOPIFY_API_SECRET)
 
     try:
-        session = shopify.Session(shop, SHOPIFY_API_VERSION)
+        session = shopify.Session(shop_domain, SHOPIFY_API_VERSION)
         token = session.request_token(params)
     except Exception as e:
         logger.log(
             event="oauth_failed",
             level="error",
-            store=shop,
+            store=shop_domain,
             data={"error": str(e), "message": "❌ OAuth verification failed."}
         )
         raise HTTPException(status_code=400, detail=f"OAuth verification failed: {str(e)}")
 
-    # Activate session and fetch scopes
     shopify.ShopifyResource.activate_session(session)
+
     try:
         scopes = [scope.attributes["handle"] for scope in AccessScope.find()]
     except Exception as e:
         logger.log(
             event="scope_fetch_failed",
             level="warning",
-            store=shop,
+            store=shop_domain,
             data={"error": str(e), "message": "⚠️ Could not fetch access scopes."}
         )
         scopes = []
 
-    # Detect scope changes
-    existing_shop = mongo.get_shop_by_domain(shop)
-    previous_scopes = existing_shop.get("scopes") if existing_shop else None
+    # Create shop in DB if not exists
+    shop_instance = shops.get_by_domain(shop_domain)
+    if not shop_instance:
+        shop_instance = shops.add_new_shop(shop_domain)
 
+    # Detect scope changes
+    previous_scopes = shop_instance.get_scopes()
     if previous_scopes and set(previous_scopes) != set(scopes):
-        logger.log(
+        shop_instance.log_action(
             event="scope_changed",
-            store=shop,
             level="info",
             data={
                 "message": "🔁 OAuth scope changed.",
@@ -104,13 +109,13 @@ def callback(request: Request):
             }
         )
 
-    # Save token and settings
-    mongo.save_shop_token(shop, token, scopes)
-    mongo.update_shop_settings(shop, DEFAULT_SETTINGS)
+    # Save token and scopes
+    shop_instance.set_token(token)
+    shop_instance.set_scopes(scopes)
+    shop_instance.set_settings(DEFAULT_SETTINGS)
 
-    logger.log(
+    shop_instance.log_action(
         event="shop_installed",
-        store=shop,
         level="success",
         data={
             "message": "✅ App installed successfully.",
@@ -129,17 +134,15 @@ def callback(request: Request):
 
     if uninstall_webhook.errors:
         errors = uninstall_webhook.errors.full_messages()
-        logger.log(
+        shop_instance.log_action(
             event="webhook_failed",
-            store=shop,
             level="warning",
             data={"errors": errors, "message": "⚠️ Failed to register uninstall webhook."}
         )
         webhook_success = False
     else:
-        logger.log(
+        shop_instance.log_action(
             event="webhook_registered",
-            store=shop,
             level="info",
             data={"topic": "app/uninstalled", "message": "📬 Uninstall webhook registered."}
         )
@@ -149,7 +152,7 @@ def callback(request: Request):
 
     return {
         "message": "App installed successfully.",
-        "shop": shop,
+        "shop": shop_domain,
         "token_saved": True,
         "settings_initialized": True,
         "webhook_registered": webhook_success

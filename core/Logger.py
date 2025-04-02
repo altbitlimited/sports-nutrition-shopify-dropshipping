@@ -6,24 +6,35 @@ from termcolor import colored
 from core.MongoManager import MongoManager
 from core.config import IS_DEV
 
+
 class AppLogger:
     def __init__(self, mongo: MongoManager = None):
         self.mongo = mongo or MongoManager()
 
     def log(self, event: str, data: dict, store: str = None, level: str = "info", task_id: str = None):
-        # Always log to DB
-        log_entry = {
-            "event": event,
-            "level": level,
-            "store": store,
-            "task_id": task_id,
-            "data": data,
-            "timestamp": datetime.utcnow()
-        }
-        self.mongo.logs.insert_one(log_entry)
+        should_log_to_db = (
+            level in ["warning", "error"] or
+            event.endswith("_started") or
+            event.endswith("_completed")
+        )
 
-        # Only print in development
-        if IS_DEV:
+        if should_log_to_db:
+            log_entry = {
+                "event": event,
+                "level": level,
+                "store": store,
+                "task_id": task_id,
+                "data": data,
+                "timestamp": datetime.utcnow()
+            }
+            self.mongo.logs.insert_one(log_entry)
+
+        should_print = (
+            IS_DEV or
+            level in ["warning", "error", "debug"]
+        )
+
+        if should_print:
             icon = {
                 "info": "ℹ️",
                 "success": "✅",
@@ -48,7 +59,7 @@ class AppLogger:
         self.log(
             event=f"{event}_started",
             level="info",
-            data={"message": f"Task started", "count": count},
+            data={"message": "Task started", "count": count},
             task_id=task_id
         )
         return task_id
@@ -67,6 +78,7 @@ class AppLogger:
             task_id=task_id
         )
 
+    # TODO remove at some point
     def log_product_error(self, barcode: str, error: str, task_id: str = None, extra: dict = None):
         error_data = {
             "barcode": barcode,
