@@ -3,55 +3,100 @@
 from pymongo import MongoClient, ASCENDING, DESCENDING
 from core.config import MONGODB_URI, MONGODB_DB_NAME
 from core.encryption import encrypt_token, decrypt_token
+import time
 
 
 class MongoManager:
     def __init__(self):
         self.client = MongoClient(MONGODB_URI)
         self.db = self.client[MONGODB_DB_NAME]
+
+        # Collections
         self.shops = self.db["shops"]
         self.logs = self.db["logs"]
         self.products = self.db["products"]
         self.barcode_lookup_cache = self.db["barcode_lookup_cache"]
         self.openai_cache = self.db["openai_cache"]
 
-        # Create indexes for efficient querying
-        self.create_indexes()
+        self._indexes_created = False
 
     def create_indexes(self):
         """
         Create indexes for commonly queried fields to improve performance.
+        This will run only once per MongoManager instance.
         """
-        # === Products Indexes ===
-        self.products.create_index([("barcode", ASCENDING)], name="barcode_index", unique=True)
-        self.products.create_index([("suppliers.name", ASCENDING)], name="suppliers_name_index")
-        self.products.create_index([("updated_at", DESCENDING)], name="updated_at_index")
-        self.products.create_index([("created_at", DESCENDING)], name="created_at_index")
-        self.products.create_index([("barcode_lookup_data.brand", ASCENDING)], name="brand_index")
-        self.products.create_index([("barcode_lookup_status", ASCENDING)], name="barcode_lookup_status_index")
-        self.products.create_index([("images_status", ASCENDING)], name="images_status_index")
-        self.products.create_index([("ai_generate_status", ASCENDING)], name="ai_generate_status_index")
 
-        self.products.create_index(
+        if self._indexes_created:
+            return
+
+        start = time.time()
+        print("🔧 Creating MongoDB indexes...")
+
+        # === Products Indexes ===
+        self._safe_create_index(self.products, [("barcode", ASCENDING)], "barcode_index", unique=True)
+        self._safe_create_index(self.products, [("suppliers.name", ASCENDING)], "suppliers_name_index")
+        self._safe_create_index(self.products, [("updated_at", DESCENDING)], "updated_at_index")
+        self._safe_create_index(self.products, [("created_at", DESCENDING)], "created_at_index")
+        self._safe_create_index(self.products, [("barcode_lookup_data.brand", ASCENDING)], "brand_index")
+        self._safe_create_index(self.products, [("barcode_lookup_status", ASCENDING)], "barcode_lookup_status_index")
+        self._safe_create_index(self.products, [("images_status", ASCENDING)], "images_status_index")
+        self._safe_create_index(self.products, [("ai_generate_status", ASCENDING)], "ai_generate_status_index")
+
+        self._safe_create_index(
+            self.products,
             [("barcode_lookup_status", ASCENDING), ("images_status", ASCENDING)],
-            name="enrich_products_barcode_lookup_images_status"
+            "enrich_products_barcode_lookup_images_status"
         )
-        self.products.create_index(
+        self._safe_create_index(
+            self.products,
             [("barcode_lookup_status", ASCENDING), ("images_status", ASCENDING), ("ai_generate_status", ASCENDING)],
-            name="enrich_products_barcode_lookup_images_ai_generate_status"
+            "enrich_products_barcode_lookup_images_ai_generate_status"
         )
-        self.products.create_index(
+        self._safe_create_index(
+            self.products,
             [("barcode", ASCENDING), ("suppliers.name", ASCENDING)],
-            name="barcode_supplier_index"
+            "barcode_supplier_index"
+        )
+        self._safe_create_index(
+            self.products,
+            [("shops.shop", ASCENDING)],
+            "product_shops_shop_index"
+        )
+        self._safe_create_index(
+            self.products,
+            [
+                ("ai_generate_status", ASCENDING),
+                ("barcode_lookup_status", ASCENDING),
+                ("images_status", ASCENDING),
+                ("shops.shop", ASCENDING)
+            ],
+            "enrichment_status_with_shop_index"
+        )
+        self._safe_create_index(
+            self.products,
+            [("suppliers.parsed.brand", ASCENDING), ("suppliers.name", ASCENDING)],
+            "suppliers_brand_supplier_index"
         )
 
         # === Shops Indexes ===
-        self.shops.create_index([("shop", ASCENDING)], name="shop_domain_index", unique=True)
-        self.shops.create_index([("settings.exclude_suppliers", ASCENDING)], name="exclude_suppliers_index")
-        self.shops.create_index([("settings.exclude_brands", ASCENDING)], name="exclude_brands_index")
-        self.shops.create_index([("settings.include_suppliers", ASCENDING)], name="include_suppliers_index")
-        self.shops.create_index([("settings.include_brands", ASCENDING)], name="include_brands_index")
+        self._safe_create_index(self.shops, [("shop", ASCENDING)], "shop_domain_index", unique=True)
+
+        # Optional (only if you query based on these settings)
+        self._safe_create_index(self.shops, [("settings.exclude_suppliers", ASCENDING)], "exclude_suppliers_index")
+        self._safe_create_index(self.shops, [("settings.exclude_brands", ASCENDING)], "exclude_brands_index")
 
         # === Cache Indexes ===
-        self.barcode_lookup_cache.create_index([("key", ASCENDING)], name="key_index")
-        self.openai_cache.create_index([("key", ASCENDING)], name="key_index")
+        self._safe_create_index(self.barcode_lookup_cache, [("key", ASCENDING)], "key_index")
+        self._safe_create_index(self.openai_cache, [("key", ASCENDING)], "key_index")
+
+        elapsed = time.time() - start
+        print(f"✅ MongoDB index creation completed in {elapsed:.2f}s.\n")
+
+        self._indexes_created = True
+
+    def _safe_create_index(self, collection, fields, name, **kwargs):
+        try:
+            print(f"⏳ Creating index: {name} on {collection.name}")
+            collection.create_index(fields, name=name, **kwargs)
+        except Exception as e:
+            print(f"❌ Failed to create index {name} on {collection.name}: {e}")

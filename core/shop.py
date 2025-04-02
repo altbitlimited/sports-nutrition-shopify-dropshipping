@@ -1,5 +1,3 @@
-# core/shop.py
-
 from core.MongoManager import MongoManager
 from core.encryption import encrypt_token, decrypt_token
 from core.Logger import AppLogger
@@ -53,7 +51,32 @@ class Shop:
         )
 
     def get_settings(self):
-        return self.shop.get("settings", self.DEFAULT_SETTINGS.copy())
+        current_settings = self.shop.get("settings", {})
+        updated = False
+
+        # Ensure all default keys are present
+        for key, default_value in self.DEFAULT_SETTINGS.items():
+            if key not in current_settings:
+                current_settings[key] = default_value
+                updated = True
+
+        # If any defaults were missing and added, persist the update
+        if updated:
+            self.collection.update_one(
+                {"shop": self.domain},
+                {"$set": {"settings": current_settings}}
+            )
+            self.shop["settings"] = current_settings
+            self.log_action(
+                event="shop_settings_autofilled_defaults",
+                level="info",
+                data={
+                    "message": "🧩 Missing default settings were added automatically.",
+                    "new_settings": current_settings
+                }
+            )
+
+        return current_settings
 
     def update_settings(self, new_settings: dict):
         updated = {f"settings.{k}": v for k, v in new_settings.items()}
@@ -107,7 +130,7 @@ class Shop:
             event="shop_setting_updated",
             level="info",
             data={
-                "message": f"🔧 Setting '{key}' updated to '{value}'.",
+                "message": f"🔧 Setting '{key}' updated to '{value}'",
                 "key": key,
                 "value": value
             }
@@ -128,10 +151,10 @@ class Shop:
         }
 
     def get_excluded_suppliers(self):
-        return self.get_setting("exclude_suppliers", [])
+        return list(map(lambda x: x.lower(), self.get_setting("exclude_suppliers", [])))
 
     def get_excluded_brands(self):
-        return self.get_setting("exclude_brands", [])
+        return list(map(lambda x: x.lower(), self.get_setting("exclude_brands", [])))
 
     def get_log_prefix(self):
         return f"[Shop: {self.domain}]"
@@ -150,13 +173,9 @@ class Shop:
         )
 
     def is_product_eligible(self, product: dict) -> bool:
-        """
-        Determines if a product is eligible to be listed on this shop based on its exclusions.
-        """
         excluded_suppliers = self.get_excluded_suppliers()
         excluded_brands = self.get_excluded_brands()
 
-        # Check supplier exclusion
         for supplier in product.get("suppliers", []):
             if supplier.get("name") in excluded_suppliers:
                 self.log_action(
@@ -170,7 +189,6 @@ class Shop:
                 )
                 return False
 
-        # Check brand exclusion
         brand = product.get("barcode_lookup_data", {}).get("brand") or \
                 product.get("barcode_lookup_data", {}).get("manufacturer")
 
@@ -187,3 +205,67 @@ class Shop:
             return False
 
         return True
+
+    def get_eligible_product_barcodes_with_count(self, skip: int = None, limit: int = None) -> tuple[list[str], int]:
+        excluded_suppliers = self.get_excluded_suppliers()
+        excluded_brands = self.get_excluded_brands()
+
+        match_conditions = {
+            "ai_generate_status": "success",
+            "barcode_lookup_status": "success",
+            "images_status": "success",
+            "shops.shop": {"$ne": self.domain},
+        }
+
+        exclusion_filters = []
+
+        if excluded_suppliers:
+            exclusion_filters.append({
+                "$not": {
+                    "$elemMatch": {
+                        "suppliers": {
+                            "$elemMatch": {
+                                "name": {"$in": excluded_suppliers}
+                            }
+                        }
+                    }
+                }
+            })
+
+        if excluded_brands:
+            exclusion_filters.append({
+                "$expr": {
+                    "$not": {
+                        "$in": [
+                            {
+                                "$toLower": {
+                                    "$ifNull": [
+                                        "$barcode_lookup_data.brand",
+                                        "$barcode_lookup_data.manufacturer"
+                                    ]
+                                }
+                            },
+                            excluded_brands
+                        ]
+                    }
+                }
+            })
+
+        if exclusion_filters:
+            match_conditions["$and"] = exclusion_filters
+
+        total = self.mongo.products.count_documents(match_conditions)
+
+        pipeline = [{"$match": match_conditions}, {"$sort": {"updated_at": -1}}]
+
+        if skip is not None:
+            pipeline.append({"$skip": skip})
+        if limit is not None:
+            pipeline.append({"$limit": limit})
+
+        pipeline.append({"$project": {"barcode": 1, "_id": 0}})
+
+        cursor = self.mongo.products.aggregate(pipeline)
+        barcodes = [doc["barcode"] for doc in cursor]
+
+        return barcodes, total

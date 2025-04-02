@@ -7,6 +7,9 @@
   [[services.ports]]
     port = "80"
 
+[deploy]
+  release_command = "python3 scripts/init_indexes.py"
+
 [[cron]]
   name = "prune_old_logs"
   schedule = "0 0 * * *"  # Runs every day at midnight UTC

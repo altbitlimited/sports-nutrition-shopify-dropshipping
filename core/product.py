@@ -190,16 +190,17 @@ class Product:
             return False
 
         brand = self.get_brand()
-        if brand in shop.get_excluded_brands():
+
+        if brand.lower() in shop.get_excluded_brands():
             self.log_action(event="product_not_eligible_excluded_brand", level="debug", data={"brand": brand, "message": "🚫 Brand excluded."})
             return False
 
         for supplier in self.product.get("suppliers", []):
             name = supplier.get("name")
             parsed = supplier.get("parsed", {})
-            if name in shop.get_excluded_suppliers():
+            if name.lower() in shop.get_excluded_suppliers():
                 continue
-            if parsed.get("stock_level", 0) > 0 and parsed.get("price", 0) > 0:
+            if parsed.get("price", 0) > 0:
                 return True
 
         self.log_action(event="product_not_eligible_no_valid_supplier", level="debug", data={"message": "🚫 No usable suppliers with stock and price."})
@@ -212,7 +213,7 @@ class Product:
             parsed = supplier.get("parsed", {})
             if name in shop.get_excluded_suppliers():
                 continue
-            if parsed.get("stock_level", 0) > 0 and parsed.get("price", 0) > 0:
+            if parsed.get("price", 0) > 0:
                 valid_suppliers.append({"name": name, **parsed})
 
         best = min(valid_suppliers, key=lambda s: s["price"], default=None)
@@ -231,6 +232,8 @@ class Product:
         margin = shop.get_setting("profit_margin", 1.5)
         rounding = shop.get_setting("rounding", 0.99)
         base_price = best_supplier["price"] * margin
+        # Round up to nearest integer, then adjust to end in specified decimal (e.g., .99)
+        # Example: base_price 22.43, rounding 0.99 → 22 + 0.99 = 22.99
         rounded_price = round(base_price) + rounding - 1 if rounding else round(base_price, 2)
         return round(rounded_price, 2)
 
@@ -446,6 +449,17 @@ class Product:
                 "supplier": best_supplier["name"]
             }
         )
+
+        if stock_level == 0:
+            self.log_action(
+                event="shopify_payload_generated_zero_stock",
+                level="warning",
+                data={
+                    "shop": shop.domain,
+                    "supplier": best_supplier["name"],
+                    "message": "⚠️ Shopify payload generated with stock level 0"
+                }
+            )
 
         return product_payload
 
