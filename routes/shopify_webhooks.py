@@ -92,11 +92,7 @@ async def handle_collection_deleted(shop_domain: str, payload: dict):
             }
         )
 
-import json
 async def handle_product_deleted(shop_domain: str, payload: dict):
-    print('####')
-    print(json.dumps(payload, indent=4))
-    print('####')
     from core.product import Product
     shop = Shop(shop_domain)
     product_id = str(payload.get("id"))

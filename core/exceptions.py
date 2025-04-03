@@ -8,3 +8,13 @@ class ProductNotFoundError(Exception):
         self.barcode = barcode
         self.message = f"Product with barcode {self.barcode} not found in the database."
         super().__init__(self.message)
+
+class ShopifyProductCreationError(Exception):
+    """
+    Exception raised when a product fails to fully create on Shopify and is cleaned up.
+    """
+    def __init__(self, barcode, message=None, original_exception=None):
+        self.barcode = barcode
+        self.original_exception = original_exception
+        self.message = message or f"Product creation failed for barcode {barcode}."
+        super().__init__(self.message)

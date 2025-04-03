@@ -5,6 +5,8 @@ import requests
 import mimetypes
 from typing import Dict, Any
 from urllib.parse import urlparse
+from io import BytesIO
+from requests_toolbelt import MultipartEncoder
 
 from core.config import SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_API_VERSION, APP_BASE_URL
 from core.shopify_graphql.mutations import (
@@ -105,39 +107,29 @@ class ShopifyClient:
 
         raise ShopifyGraphQLError("Too many retries – Shopify API")
 
-    def upload_image(self, image_url: str, task_id=None) -> str:
-        filename = image_url.split("/")[-1]
-        mime_type, _ = mimetypes.guess_type(filename)
-        mime_type = mime_type or "image/jpeg"  # fallback
-
-        variables = {
-            "input": [{
-                "filename": filename,
-                "mimeType": mime_type,
-                "resource": "IMAGE",
-                "url": image_url,
-            }]
+    def upload_image_rest(self, product_id: str, image_url: str, task_id=None) -> dict:
+        endpoint = f"https://{self.domain}/admin/api/2023-07/products/{product_id}/images.json"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": self.token,
+        }
+        payload = {
+            "image": {
+                "src": image_url
+            }
         }
 
-        data = self._post_graphql(STAGED_UPLOADS_CREATE_MUTATION, variables, task_id=task_id)
+        response = requests.post(endpoint, headers=headers, json=payload)
+        response.raise_for_status()
 
-        try:
-            resource_url = data["stagedUploadsCreate"]["stagedTargets"][0]["resourceUrl"]
-            self.shop.log_action(
-                event="🖼️ shopify_image_uploaded",
-                level="info",
-                data={"original_url": image_url, "shopify_url": resource_url, "mime_type": mime_type},
-                task_id=task_id
-            )
-            return resource_url
-        except Exception as e:
-            self.shop.log_action(
-                event="❌ shopify_upload_image_failed",
-                level="error",
-                data={"error": str(e), "image_url": image_url, "mime_type": mime_type},
-                task_id=task_id
-            )
-            raise
+        result = response.json()
+        self.shop.log_action("✅ shopify_rest_image_attached", "info", {
+            "product_id": product_id,
+            "image_url": image_url,
+            "response_id": result.get("image", {}).get("id")
+        }, task_id=task_id)
+
+        return result
 
     def create_product(self, payload: Dict[str, Any], task_id=None) -> Dict[str, Any]:
         data = self._post_graphql(PRODUCT_CREATE_MUTATION, {"input": payload}, task_id=task_id)
@@ -304,9 +296,10 @@ class ShopifyClient:
 
         topics = [
             "app/uninstalled",
-            "collections/create",
-            "collections/update",
-            "collections/delete",
+            # Note, we are updating collections before each run of adding products so no need for this. More reliable the new way
+            # "collections/create",
+            # "collections/update",
+            # "collections/delete",
             "products/delete",
         ]
 
@@ -452,7 +445,13 @@ class ShopifyClient:
         collection = result["collection"]
         self.shop.log_action("✅ shopify_collection_created", "info", {
             "title": collection["title"],
-            "id": collection["id"]
+            "id": str(collection.get("legacyResourceId")),
+            "gid": collection["id"],
         }, task_id=task_id)
 
-        return collection
+        return {
+            "id": str(collection.get("legacyResourceId")),
+            "gid": collection["id"],
+            "title": collection["title"],
+            "handle": collection["handle"]
+        }

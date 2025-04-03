@@ -42,6 +42,7 @@ STAGED_UPLOADS_CREATE_MUTATION = """
 mutation stagedUploadsCreate($input: [StagedUploadInput!]!) {
   stagedUploadsCreate(input: $input) {
     stagedTargets {
+      url
       resourceUrl
       parameters {
         name
@@ -76,8 +77,30 @@ mutation collectionCreate($input: CollectionInput!) {
   collectionCreate(input: $input) {
     collection {
       id
+      legacyResourceId
       title
       handle
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+PRODUCT_IMAGES_ATTACH_MUTATION = """
+mutation productUpdateImages($productId: ID!, $images: [ImageInput!]!) {
+  productUpdateImages(productId: $productId, images: $images) {
+    product {
+      images(first: 10) {
+        edges {
+          node {
+            id
+            originalSrc
+          }
+        }
+      }
     }
     userErrors {
       field

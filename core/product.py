@@ -622,7 +622,6 @@ class Product:
 
         variant_id = variant_edges[0]["node"]["id"]
 
-        # 🔁 Memoize common supplier/price values
         best_supplier = self.get_best_supplier_for_shop(shop)
         if not best_supplier:
             raise Exception("❌ No valid supplier found.")
@@ -633,7 +632,6 @@ class Product:
 
         sku = self.product.get("barcode_lookup_data", {}).get("mpn", "")
 
-        # 💵 Update variant
         shopify.update_variant_bulk(product_gid, {
             "id": variant_id,
             "price": str(selling_price),
@@ -643,7 +641,18 @@ class Product:
             }
         }, task_id=task_id)
 
-        # ✅ Log + mark listed
+        # Upload images
+        image_urls = self.product.get("image_urls", [])
+        for url in image_urls or []:
+            try:
+                shopify.upload_image_rest(product_id, url, task_id=task_id)
+            except Exception as e:
+                self.log_action("shopify_image_upload_failed", "warning", {
+                    "original_url": url,
+                    "error": str(e),
+                    "message": "⚠️ Failed to upload product image via REST."
+                }, task_id=task_id)
+
         self.log_action("shopify_create_flow_completed", "success", {
             "shop": shop.domain,
             "product_id": product_id,
@@ -670,7 +679,7 @@ class Product:
             "round_to": shop.get_setting("round_to", "closest")
         })
 
-        # 📚 Collections from AI
+        # Collections
         ai = self.product.get("ai_generated_data", {})
         primary = ai.get("primary_collection")
         secondary = ai.get("secondary_collections", [])
@@ -680,7 +689,7 @@ class Product:
             success = shop.add_product_to_collection(
                 product_id=product_id,
                 product_gid=product_gid,
-                handle=name,
+                title=name,
                 task_id=task_id
             )
 
@@ -693,8 +702,8 @@ class Product:
 
                 try:
                     created = shop.client.create_collection(title=name, task_id=task_id)
-
                     new_collection = {
+                        "gid": created["gid"],
                         "id": created["id"],
                         "title": created["title"],
                         "handle": created["handle"]
@@ -705,7 +714,7 @@ class Product:
                     retry_success = shop.add_product_to_collection(
                         product_id=product_id,
                         product_gid=product_gid,
-                        handle=name,
+                        title=name,
                         task_id=task_id
                     )
 
@@ -714,7 +723,8 @@ class Product:
                             "collection": name,
                             "product_id": product_id,
                             "product_gid": product_gid,
-                            "collection_id": created["id"]
+                            "collection_id": created["id"],
+                            "collection_gid": created["gid"],
                         }, task_id=task_id)
                     else:
                         self.log_action("collection_create_retry_failed", "warning", {
@@ -740,20 +750,6 @@ class Product:
             "handle": handle,
             "url": url
         }
-
-    def add_to_collection(self, shop: Shop, collection_id: str, task_id=None):
-        shopify = shop.client
-        shopify_id = None
-
-        for entry in self.product.get("shops", []):
-            if entry.get("shop") == shop.domain:
-                shopify_id = entry.get("shopify_id")
-                break
-
-        if not shopify_id:
-            raise Exception(f"Product not listed to {shop.domain}")
-
-        return shopify.add_product_to_collection(collection_id, [shopify_id], task_id=task_id)
 
     def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
         logger.log(
