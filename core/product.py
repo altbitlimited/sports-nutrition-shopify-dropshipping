@@ -341,22 +341,93 @@ class Product:
 
     def _upsert_shop_listing(self, shop: Shop, listing_data: dict):
         """
-        Inserts or updates a listing entry in the 'shops' array of the product document.
-        If an entry for the shop exists, it updates it. Otherwise, inserts a new one.
-        Automatically adds useful defaults for known statuses like 'create_pending'.
+        Validates, merges, and inserts or updates a listing entry for a product-shop combo.
+        - Applies global and per-status defaults.
+        - Validates required fields per status.
+        - Ensures retry count is reset on success.
+        - Fails loudly on unknown status or unknown keys.
         """
+        from datetime import datetime
+
         now = datetime.utcnow()
+        status = listing_data.get("status")
         listing_data["shop"] = shop.domain
         listing_data["updated_at"] = now
 
+        # --- Global + per-status config ---
+        GLOBAL_DEFAULTS = {
+            "supplier": None,
+            "cost": None,
+            "stock_level": None,
+            "margin_used": None,
+            "rounding_used": None,
+            "round_to": None,
+            "selling_price": None,
+            "shopify_id": None,
+            "shopify_url": None,
+            "shopify_variant_id": None,
+            "shopify_handle": None,
+            "retry_count": 0
+        }
+
+        LISTING_CONFIGS = {
+            "create_pending": {
+                "required": [],
+                "defaults": {}
+            },
+            "created": {
+                "required": [
+                    "shopify_id", "shopify_variant_id", "shopify_url", "shopify_handle",
+                    "supplier", "cost", "stock_level", "selling_price",
+                    "margin_used", "rounding_used", "round_to"
+                ],
+                "defaults": {},
+                "reset_retry": True
+            },
+            # Note for future:
+            # "update_pending": {...},
+            # "updated": {...},
+            # "create_failed": {...},
+            # "update_failed": {...}
+        }
+
+        if status not in LISTING_CONFIGS:
+            raise ValueError(f"❌ Unknown shop listing status '{status}'.")
+
+        config = LISTING_CONFIGS[status]
+
+        # --- Validate required fields ---
+        for field in config.get("required", []):
+            if field not in listing_data or listing_data[field] is None:
+                raise ValueError(f"❌ Missing required field '{field}' for status '{status}'.")
+
+        # --- Apply defaults ---
+        full_listing = GLOBAL_DEFAULTS.copy()
+        full_listing.update(config.get("defaults", {}))
+        full_listing.update(listing_data)
+
+        # --- Reset retry count if needed ---
+        if config.get("reset_retry"):
+            full_listing["retry_count"] = 0
+
+        # --- Validate against unexpected fields ---
+        valid_keys = set(GLOBAL_DEFAULTS) | {"status", "shop", "created_at", "updated_at"}
+        valid_keys.update(config.get("required", []))
+        valid_keys.update(config.get("defaults", {}).keys())
+
+        unexpected = set(full_listing.keys()) - valid_keys
+        if unexpected:
+            raise ValueError(f"❌ Unexpected fields in listing_data: {unexpected}")
+
+        # --- Write to DB ---
         existing_entry = next((s for s in self.product.get("shops", []) if s["shop"] == shop.domain), None)
 
         if existing_entry:
-            listing_data["created_at"] = existing_entry.get("created_at", now)
+            full_listing["created_at"] = existing_entry.get("created_at", now)
 
             result = mongo.db.products.update_one(
                 {"barcode": self.barcode},
-                {"$set": {"shops.$[elem]": listing_data}},
+                {"$set": {"shops.$[elem]": full_listing}},
                 array_filters=[{"elem.shop": shop.domain}]
             )
 
@@ -372,41 +443,28 @@ class Product:
                 )
                 mongo.db.products.update_one(
                     {"barcode": self.barcode},
-                    {"$push": {"shops": listing_data}}
+                    {"$push": {"shops": full_listing}}
                 )
         else:
-            listing_data["created_at"] = now
-            listing_data["supplier"] = None
-            listing_data["cost"] = None
-            listing_data["stock_level"] = None
-            listing_data["margin_used"] = None
-            listing_data["rounding_used"] = None
-            listing_data["round_to"] = None
-            listing_data["selling_price"] = None
-            listing_data["shopify_id"] = None
-            listing_data["shopify_url"] = None
-            listing_data["shopify_variant_id"] = None
-            listing_data["shopify_handle"] = None
+            full_listing["created_at"] = now
             mongo.db.products.update_one(
                 {"barcode": self.barcode},
-                {"$push": {"shops": listing_data}}
+                {"$push": {"shops": full_listing}}
             )
             self.log_action(
                 event="shop_listing_created",
                 level="info",
-                data={"shop": shop.domain, "status": listing_data["status"], "message": "✨ New listing entry created for shop."}
+                data={"shop": shop.domain, "status": status, "message": "✨ New listing entry created for shop."}
             )
 
-        # Update local in-memory product
+        # --- Update local memory copy ---
         self.product.setdefault("shops", [])
-        updated = False
         for i, entry in enumerate(self.product["shops"]):
             if entry["shop"] == shop.domain:
-                self.product["shops"][i] = listing_data
-                updated = True
+                self.product["shops"][i] = full_listing
                 break
-        if not updated:
-            self.product["shops"].append(listing_data)
+        else:
+            self.product["shops"].append(full_listing)
 
     def mark_listed_to_shop(self, shop: Shop, listing_data: dict):
         """
@@ -533,6 +591,8 @@ class Product:
         })
         return payload
 
+    # NOTE: When implementing create/update tasks, support a debug/test param to simulate failure
+    # e.g., if barcode == "TEST-BREAK-123", raise Exception("Forced failure for test purposes")
     def create_on_shopify(self, shop: Shop, task_id: str = None) -> dict:
         self.log_action("shopify_create_flow_started", "info", {
             "shop": shop.domain,
