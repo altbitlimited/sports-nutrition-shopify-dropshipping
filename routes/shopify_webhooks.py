@@ -129,9 +129,9 @@ async def handle_product_deleted(shop_domain: str, payload: dict):
 
 WEBHOOK_HANDLERS = {
     "app/uninstalled": handle_app_uninstalled,
-    "collections/create": handle_collection_created,
-    "collections/update": handle_collection_updated,
-    "collections/delete": handle_collection_deleted,
+    # "collections/create": handle_collection_created,
+    # "collections/update": handle_collection_updated,
+    # "collections/delete": handle_collection_deleted,
     "products/delete": handle_product_deleted,
 }
 

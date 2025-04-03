@@ -18,3 +18,13 @@ class ShopifyProductCreationError(Exception):
         self.original_exception = original_exception
         self.message = message or f"Product creation failed for barcode {barcode}."
         super().__init__(self.message)
+
+class ShopNotReadyError(Exception):
+    """
+    Exception raised when we attempt to prepare a store ready for interacting with products.
+    """
+    def __init__(self, shop, original_exception=None):
+        self.shop = shop
+        self.original_exception = original_exception
+        self.message = f"Shop {shop.shop} is not ready for product actions."
+        super().__init__(self.message)

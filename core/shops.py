@@ -81,7 +81,8 @@ class Shops:
             "access_token": None,
             "scopes": [],
             "settings": defaults,
-            "collections": []
+            "collections": [],
+            "primary_location_id": None
         })
 
         self.log_action(

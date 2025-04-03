@@ -5,6 +5,7 @@ from core.encryption import encrypt_token, decrypt_token
 from core.Logger import AppLogger
 from datetime import datetime
 import difflib
+from core.exceptions import ShopNotReadyError
 
 class Shop:
     DEFAULT_SETTINGS = {
@@ -183,9 +184,6 @@ class Shop:
     def get_excluded_brands(self):
         return list(map(lambda x: x.lower(), self.get_setting("exclude_brands", [])))
 
-    def get_log_prefix(self):
-        return f"[Shop: {self.domain}]"
-
     def reload(self):
         self.shop = self.collection.find_one({"shop": self.domain})
         return self.shop
@@ -296,6 +294,76 @@ class Shop:
         barcodes = [doc["barcode"] for doc in cursor]
 
         return barcodes, total
+
+    def update_primary_location_id(self, task_id=None):
+        try:
+            primary_location_id = self.client.get_primary_location_id(task_id=task_id)
+
+            # ⬇️ Update DB
+            self.collection.update_one(
+                {"shop": self.domain},
+                {"$set": {"primary_location_id": primary_location_id}}
+            )
+
+            self.log_action(
+                event="📍shopify_primary_location_id_updated",
+                level="info",
+                data={"primary_location_id": primary_location_id},
+                task_id=task_id
+            )
+
+            return primary_location_id
+
+        except Exception as e:
+            self.log_action(
+                event="❌ shopify_collections_update_failed",
+                level="error",
+                data={"error": str(e)},
+                task_id=task_id
+            )
+            raise
+
+    def get_primary_location_id(self):
+        primary_location_id = self.shop.get("primary_location_id", None)
+
+        if primary_location_id is None:
+            self.log_action(
+                event="primary_location_id_not_set",
+                level="info",
+                data={
+                    "message": "Used get_primary_location_id() but it is not set, attempting to get it."
+                }
+            )
+
+            primary_location_id = self.update_primary_location_id()
+
+        if primary_location_id is None:
+            self.log_action(
+                event="primary_location_id_not_retrievable",
+                level="error",
+                data={
+                    "message": "⚠️ Attempted to get shop primary location ID but failed."
+                }
+            )
+
+        return primary_location_id
+
+    def prepare_for_product_actions(self, task_id=None):
+        self.log_action(
+            event="✅ prepare_for_product_actions",
+            level="info",
+            data={"message": "Making sure this store is ready for product actions"},
+            task_id=task_id
+        )
+
+        self.update_collections()
+        self.update_primary_location_id()
+        self.reload()
+
+        if self.get_primary_location_id() is None:
+            raise ShopNotReadyError(self)
+
+        return True
 
     def update_collections(self, task_id=None):
         try:

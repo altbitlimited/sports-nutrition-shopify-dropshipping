@@ -11,7 +11,6 @@ from requests_toolbelt import MultipartEncoder
 from core.config import SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_API_VERSION, APP_BASE_URL
 from core.shopify_graphql.mutations import (
     PRODUCT_CREATE_MUTATION,
-    STAGED_UPLOADS_CREATE_MUTATION,
     PRODUCT_VARIANTS_BULK_UPDATE_MUTATION,
     COLLECTION_ADD_PRODUCTS_MUTATION,
     COLLECTION_CREATE_MUTATION
@@ -53,7 +52,46 @@ class ShopifyClient:
 
     @staticmethod
     def get_default_scopes() -> list[str]:
-        return ["read_products", "write_products"]
+        return ["read_products", "write_products", "read_locations", "write_inventory"]
+
+    @staticmethod
+    def extract_legacy_id(gid: str) -> str:
+        if not gid:
+            raise ValueError("GID is missing or invalid.")
+        return gid.split("/")[-1]
+
+    def rest(self, method: str, path: str, json: dict = None, params: dict = None, task_id: str = None,
+             timeout: int = 10) -> dict:
+        url = f"https://{self.domain}/admin/api/{SHOPIFY_API_VERSION}/{path.lstrip('/')}"
+        headers = {
+            "Content-Type": "application/json",
+            "X-Shopify-Access-Token": self.token,
+        }
+
+        try:
+            response = requests.request(method, url, headers=headers, json=json, params=params, timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+
+        except requests.HTTPError as e:
+            self.shop.log_action("❌ shopify_rest_http_error", "error", {
+                "method": method,
+                "url": url,
+                "status_code": response.status_code,
+                "response_text": response.text,
+                "error": str(e)
+            }, task_id=task_id)
+            raise
+
+        except Exception as e:
+            self.shop.log_action("❌ shopify_rest_exception", "error", {
+                "method": method,
+                "url": url,
+                "params": params,
+                "json": json,
+                "error": str(e)
+            }, task_id=task_id)
+            raise
 
     def _post_graphql(self, query: str, variables: Dict[str, Any], task_id=None) -> Dict[str, Any]:
         for attempt in range(5):
@@ -108,28 +146,75 @@ class ShopifyClient:
         raise ShopifyGraphQLError("Too many retries – Shopify API")
 
     def upload_image_rest(self, product_id: str, image_url: str, task_id=None) -> dict:
-        endpoint = f"https://{self.domain}/admin/api/2023-07/products/{product_id}/images.json"
-        headers = {
-            "Content-Type": "application/json",
-            "X-Shopify-Access-Token": self.token,
-        }
-        payload = {
-            "image": {
-                "src": image_url
-            }
-        }
-
-        response = requests.post(endpoint, headers=headers, json=payload)
-        response.raise_for_status()
-
-        result = response.json()
+        result = self.rest(
+            method="POST",
+            path=f"products/{product_id}/images.json",
+            json={"image": {"src": image_url}},
+            task_id=task_id
+        )
+        image = result.get("image", {})
         self.shop.log_action("✅ shopify_rest_image_attached", "info", {
             "product_id": product_id,
             "image_url": image_url,
-            "response_id": result.get("image", {}).get("id")
+            "response_id": image.get("id")
+        }, task_id=task_id)
+        return result
+
+    def set_inventory_level_rest(self, inventory_item_id: str, location_id: str, quantity: int, task_id=None) -> dict:
+        result = self.rest(
+            method="POST",
+            path="inventory_levels/set.json",
+            json={
+                "inventory_item_id": inventory_item_id,
+                "location_id": location_id,
+                "available": quantity
+            },
+            task_id=task_id
+        )
+        self.shop.log_action("✅ shopify_inventory_set_rest", "info", {
+            "inventory_item_id": inventory_item_id,
+            "location_id": location_id,
+            "quantity": quantity
+        }, task_id=task_id)
+        return result
+
+    def delete_product_rest(self, product_id: str, task_id=None) -> bool:
+        try:
+            self.rest("DELETE", f"products/{product_id}.json", task_id=task_id)
+            self.shop.log_action("✅ shopify_product_deleted", "info", {
+                "product_id": product_id,
+                "message": "🧹 Product deleted successfully from Shopify."
+            }, task_id=task_id)
+            return True
+        except Exception as e:
+            self.shop.log_action("❌ shopify_product_delete_failed", "error", {
+                "product_id": product_id,
+                "error": str(e),
+                "message": "❌ Failed to delete product from Shopify."
+            }, task_id=task_id)
+            return False
+
+    def get_locations_rest(self, task_id=None) -> list[dict]:
+        result = self.rest("GET", "locations.json", task_id=task_id)
+        locations = result.get("locations", [])
+        self.shop.log_action("✅ shopify_locations_fetched", "info", {
+            "count": len(locations),
+            "location_ids": [loc.get("id") for loc in locations]
+        }, task_id=task_id)
+        return locations
+
+    def get_primary_location_id(self, task_id=None) -> str:
+        locations = self.get_locations_rest(task_id=task_id)
+        if not locations:
+            raise Exception("❌ No active locations found for this shop.")
+
+        primary_id = str(locations[0]["id"])
+
+        self.shop.log_action("📍primary_location_id_fetched", "info", {
+            "primary_location_id_retrieved": primary_id,
         }, task_id=task_id)
 
-        return result
+        return primary_id
 
     def create_product(self, payload: Dict[str, Any], task_id=None) -> Dict[str, Any]:
         data = self._post_graphql(PRODUCT_CREATE_MUTATION, {"input": payload}, task_id=task_id)
@@ -164,9 +249,9 @@ class ShopifyClient:
 
         return product_info
 
-    def update_variant_bulk(self, product_id: str, variant_payload: dict, task_id=None) -> dict:
+    def update_variant_bulk(self, product_gid: str, variant_payload: dict, task_id=None) -> dict:
         variables = {
-            "productId": product_id,
+            "productId": product_gid,
             "variants": [variant_payload]
         }
 

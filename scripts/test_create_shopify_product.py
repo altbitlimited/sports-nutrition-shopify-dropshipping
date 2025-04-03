@@ -8,8 +8,7 @@ from core.Logger import AppLogger
 
 def main(barcode: str, shop_domain: str):
     shop = Shop(shop_domain)
-    shop.update_collections()
-    shop.reload()
+    shop.prepare_for_product_actions()
     logger = AppLogger()
     task_id = logger.log_task_start("test_create_shopify_product", count=1)
 

@@ -1,4 +1,5 @@
 # core/product.py
+from pycparser.ply.yacc import error_count
 
 from core.MongoManager import MongoManager
 from core.Logger import AppLogger
@@ -7,6 +8,7 @@ from core.exceptions import ProductNotFoundError
 from core.shop import Shop
 from math import ceil, floor
 from core.clients.shopify_client import ShopifyClient, ShopifyGraphQLError
+import time
 
 mongo = MongoManager()
 logger = AppLogger(mongo)
@@ -353,6 +355,10 @@ class Product:
             return False, "❌ Product has already been created."
         if self.has_shop_listing(shop, statuses=("create_processing",)):
             return False, "❌ Product is being processed."
+        if self.has_shop_listing(shop, statuses=("create_fail",)):
+            return False, "❌ Product has been marked as fail and will not be re-attempted."
+        if self.has_shop_listing(shop, statuses=("unmanaged",)):
+            return False, "❌ Product is unmanaged."
         return True, "✅ Product is ready to be listed."
 
     def _upsert_shop_listing(self, shop: Shop, listing_data: dict):
@@ -361,6 +367,8 @@ class Product:
         status = listing_data.get("status")
         listing_data["shop"] = shop.domain
         listing_data["updated_at"] = now
+
+        MAX_FAIL_COUNT = 3
 
         GLOBAL_DEFAULTS = {
             "supplier": None,
@@ -375,12 +383,15 @@ class Product:
             "shopify_url": None,
             "shopify_variant_id": None,
             "shopify_handle": None,
-            "retry_count": 0,
+            "error_count": 0,
             "message": None,
         }
 
         LISTING_CONFIGS = {
             "create_pending": {"required": [], "defaults": {}},
+            "create_processing": {"required": [], "defaults": {}},
+            "create_error": {"required": [], "defaults": {}, "increment_error_count": True},
+            "create_fail": {"required": [], "defaults": {}},
             "created": {
                 "required": [
                     "shopify_id", "shopify_gid", "shopify_variant_id", "shopify_url", "shopify_handle",
@@ -388,7 +399,7 @@ class Product:
                     "margin_used", "rounding_used", "round_to"
                 ],
                 "defaults": {},
-                "reset_retry": True
+                "reset_error_count": True
             },
             "unmanaged": {"required": [], "defaults": {}},
         }
@@ -419,8 +430,19 @@ class Product:
         # Preserve created_at
         full_listing["created_at"] = existing_entry.get("created_at", now) if existing_entry else now
 
-        if config.get("reset_retry"):
-            full_listing["retry_count"] = 0
+        if config.get("reset_error_count"):
+            full_listing["error_count"] = 0
+        elif config.get("increment_error_count"):
+            full_listing["error_count"] += 1
+
+            if full_listing["error_count"] >= MAX_FAIL_COUNT:
+                full_listing["status"] = "create_fail"
+                error_count_temp = full_listing["error_count"]
+                self.log_action("shop_reached_max_creation_attempts", "error", {
+                    "shop": shop.domain,
+                    "product_id": self.barcode,
+                    "message": f"🚨 Product reached {error_count_temp}/{MAX_FAIL_COUNT} max creation attempts, no more attempts will be made."
+                })
 
         valid_keys = set(GLOBAL_DEFAULTS) | {"status", "shop", "created_at", "updated_at"}
         valid_keys.update(config.get("required", []))
@@ -458,7 +480,7 @@ class Product:
             self.log_action(
                 event="shop_listing_created",
                 level="info",
-                data={"shop": shop.domain, "status": status, "message": "✨ New listing entry created for shop."}
+                data={"shop": shop.domain,"status": status, "message": "✨ New listing entry created for shop."}
             )
 
         self.product.setdefault("shops", [])
@@ -483,6 +505,7 @@ class Product:
             level="info",
             data={
                 "shop": shop.domain,
+                "status": updated_listing_data['status'],
                 "listing_data": updated_listing_data,
                 "message": "📌 Shop product listing updated."
             }
@@ -604,36 +627,108 @@ class Product:
             "message": "🚀 Starting Shopify product creation flow."
         }, task_id=task_id)
 
-        shopify = ShopifyClient(shop)
-        product_payload = self.generate_shopify_payload(shop)
+        product_id = None  # 👈 Needed for failsafe cleanup
 
-        if not product_payload:
+        self.mark_listed_to_shop(shop, {
+            "status": "create_processing",
+        })
+
+        try:
+            product_id, product_gid, variant_gid, handle, url = self.create_base_product_on_shopify(shop, task_id)
+
+            self.update_shopify_variant(shop, product_gid, variant_gid, task_id)
+            self.set_shopify_inventory(shop, variant_gid, task_id)
+            # NOTE: Use this to force failure for testing
+            # raise Exception("force_fail")
+            self.upload_product_images_to_shopify(shop, product_id, task_id)
+
+            best_supplier = self.get_best_supplier_for_shop(shop)
+            selling_price = self.get_selling_price_for_shop(shop)
+
+            self.assign_product_collections(shop, product_id, product_gid, task_id)
+
+            self.mark_listed_to_shop(shop, {
+                "status": "created",
+                "shopify_id": product_id,
+                "shopify_gid": product_gid,
+                "shopify_url": url,
+                "shopify_variant_id": variant_gid,
+                "shopify_handle": handle,
+                "supplier": best_supplier["supplier_name"],
+                "cost": best_supplier["price"],
+                "stock_level": best_supplier.get("stock_level", 0),
+                "selling_price": selling_price,
+                "margin_used": shop.get_setting("profit_margin", 1.5),
+                "rounding_used": shop.get_setting("rounding", 0.99),
+                "round_to": shop.get_setting("round_to", "closest")
+            })
+
+            self.log_action("shopify_create_flow_completed", "success", {
+                "shop": shop.domain,
+                "product_id": product_id,
+                "product_gid": product_gid,
+                "variant_id": variant_gid,
+                "handle": handle,
+                "url": url,
+                "message": "✅ Product and variant successfully created and enriched on Shopify."
+            }, task_id=task_id)
+
+            return {
+                "product_id": product_id,
+                "product_gid": product_gid,
+                "variant_id": variant_gid,
+                "handle": handle,
+                "url": url
+            }
+        except Exception as e:
+            self.mark_listed_to_shop(shop, {
+                "status": "create_error",
+            })
+
+            self.log_action("shopify_create_flow_failed", "error", {
+                "shop": shop.domain,
+                "product_id": product_id,
+                "error": str(e),
+                "message": "💥 Shopify creation flow failed — attempting cleanup."
+            }, task_id=task_id)
+
+            if product_id:
+                shop.client.delete_product_rest(product_id, task_id=task_id)
+
+            raise
+
+    def create_base_product_on_shopify(self, shop: Shop, task_id=None):
+        payload = self.generate_shopify_payload(shop)
+        if not payload:
             raise Exception("Product payload generation failed.")
 
-        response = shopify.create_product(product_payload, task_id=task_id)
+        response = shop.client.create_product(payload, task_id=task_id)
         product_id = response["id"]
         product_gid = response["gid"]
+        variant_edges = response.get("variants", {}).get("edges", [])
+
+        if not variant_edges:
+            # Fallback via REST
+            resp = shop.client.rest("GET", f"products/{product_id}.json")
+            variants = resp.get("product", {}).get("variants", [])
+            if not variants:
+                raise Exception("❌ No variants found even after fallback.")
+            variant_gid = variants[0]["id"]
+        else:
+            variant_gid = variant_edges[0]["node"]["id"]
+
         handle = response.get("handle")
         url = f"https://{shop.domain}/products/{handle}" if handle else None
 
-        variant_edges = response.get("variants", {}).get("edges", [])
-        if not variant_edges:
-            raise Exception("❌ No default variant found after product creation.")
+        return product_id, product_gid, variant_gid, handle, url
 
-        variant_id = variant_edges[0]["node"]["id"]
-
+    def update_shopify_variant(self, shop: Shop, product_gid: str, variant_gid: str, task_id=None):
         best_supplier = self.get_best_supplier_for_shop(shop)
-        if not best_supplier:
-            raise Exception("❌ No valid supplier found.")
-
         selling_price = self.get_selling_price_for_shop(shop)
-        if selling_price is None:
-            raise Exception("❌ Selling price missing; cannot update variant.")
-
         sku = self.product.get("barcode_lookup_data", {}).get("mpn", "")
 
-        shopify.update_variant_bulk(product_gid, {
-            "id": variant_id,
+        shop.client.update_variant_bulk(product_gid, {
+            "id": variant_gid,
             "price": str(selling_price),
             "inventoryItem": {
                 "sku": sku,
@@ -641,11 +736,51 @@ class Product:
             }
         }, task_id=task_id)
 
-        # Upload images
-        image_urls = self.product.get("image_urls", [])
-        for url in image_urls or []:
+        self.log_action("variant_updated", "info", {
+            "variant_gid": variant_gid,
+            "price": selling_price,
+            "sku": sku,
+            "message": "✏️ Variant updated with SKU and price."
+        }, task_id=task_id)
+
+    def set_shopify_inventory(self, shop: Shop, variant_gid: str, task_id=None):
+        best_supplier = self.get_best_supplier_for_shop(shop)
+        stock = best_supplier.get("stock_level", 0)
+        location_id = shop.get_primary_location_id()
+
+        variant_id = ShopifyClient.extract_legacy_id(variant_gid)
+        variant = shop.client.rest("GET", f"variants/{variant_id}.json").get("variant", {})
+        inventory_item_id = variant.get("inventory_item_id")
+        if not inventory_item_id:
+            raise Exception("❌ Could not determine inventory_item_id from variant.")
+
+        max_attempts = 3
+        for attempt in range(1, max_attempts + 1):
             try:
-                shopify.upload_image_rest(product_id, url, task_id=task_id)
+                shop.client.set_inventory_level_rest(inventory_item_id, location_id, stock, task_id=task_id)
+                self.log_action("inventory_set", "info", {
+                    "inventory_item_id": inventory_item_id,
+                    "stock_level": stock,
+                    "location_id": location_id,
+                    "message": f"📦 Inventory set on attempt {attempt}"
+                }, task_id=task_id)
+                break
+            except Exception as e:
+                self.log_action("inventory_set_failed", "warning", {
+                    "inventory_item_id": inventory_item_id,
+                    "location_id": location_id,
+                    "attempt": attempt,
+                    "error": str(e),
+                    "message": f"⚠️ Inventory update attempt {attempt} failed."
+                }, task_id=task_id)
+                if attempt == max_attempts:
+                    raise
+                time.sleep(2 ** attempt)
+
+    def upload_product_images_to_shopify(self, shop: Shop, product_id: str, task_id=None):
+        for url in self.product.get("image_urls", []) or []:
+            try:
+                shop.client.upload_image_rest(product_id, url, task_id=task_id)
             except Exception as e:
                 self.log_action("shopify_image_upload_failed", "warning", {
                     "original_url": url,
@@ -653,33 +788,7 @@ class Product:
                     "message": "⚠️ Failed to upload product image via REST."
                 }, task_id=task_id)
 
-        self.log_action("shopify_create_flow_completed", "success", {
-            "shop": shop.domain,
-            "product_id": product_id,
-            "product_gid": product_gid,
-            "variant_id": variant_id,
-            "handle": handle,
-            "url": url,
-            "message": "✅ Product and variant successfully created on Shopify."
-        }, task_id=task_id)
-
-        self.mark_listed_to_shop(shop, {
-            "status": "created",
-            "shopify_id": product_id,
-            "shopify_gid": product_gid,
-            "shopify_url": url,
-            "shopify_variant_id": variant_id,
-            "shopify_handle": handle,
-            "supplier": best_supplier["supplier_name"],
-            "cost": best_supplier["price"],
-            "stock_level": best_supplier.get("stock_level", 0),
-            "selling_price": selling_price,
-            "margin_used": shop.get_setting("profit_margin", 1.5),
-            "rounding_used": shop.get_setting("rounding", 0.99),
-            "round_to": shop.get_setting("round_to", "closest")
-        })
-
-        # Collections
+    def assign_product_collections(self, shop: Shop, product_id: str, product_gid: str, task_id: str = None):
         ai = self.product.get("ai_generated_data", {})
         primary = ai.get("primary_collection")
         secondary = ai.get("secondary_collections", [])
@@ -694,22 +803,9 @@ class Product:
             )
 
             if not success:
-                self.log_action("collection_match_not_found", "debug", {
-                    "handle": name,
-                    "title": None,
-                    "message": "❌ No collection found via fuzzy or exact match."
-                }, task_id=task_id)
-
                 try:
                     created = shop.client.create_collection(title=name, task_id=task_id)
-                    new_collection = {
-                        "gid": created["gid"],
-                        "id": created["id"],
-                        "title": created["title"],
-                        "handle": created["handle"]
-                    }
-
-                    shop.add_local_collection(new_collection)
+                    shop.add_local_collection(created)
 
                     retry_success = shop.add_product_to_collection(
                         product_id=product_id,
@@ -725,6 +821,7 @@ class Product:
                             "product_gid": product_gid,
                             "collection_id": created["id"],
                             "collection_gid": created["gid"],
+                            "message": "🌱 Created collection and added product."
                         }, task_id=task_id)
                     else:
                         self.log_action("collection_create_retry_failed", "warning", {
@@ -742,14 +839,6 @@ class Product:
                         "message": "❌ Failed to create collection.",
                         "error": str(e)
                     }, task_id=task_id)
-
-        return {
-            "product_id": product_id,
-            "product_gid": product_gid,
-            "variant_id": variant_id,
-            "handle": handle,
-            "url": url
-        }
 
     def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
         logger.log(

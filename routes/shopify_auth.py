@@ -61,6 +61,7 @@ def callback(request: Request):
         client = shop_instance.client
         success = client.register_webhooks()
         shop_instance.update_collections()
+        shop_instance.update_primary_location_id()
 
         shop_instance.log_action(
             event="shop_installed",
