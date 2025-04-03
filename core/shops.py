@@ -59,7 +59,9 @@ class Shops:
         shop = Shop(shop_domain)
         return shop.get_excluded_brands()
 
-    def add_new_shop(self, shop_domain: str, settings: dict = None):
+    def add_new_shop(self, shop_domain: str, settings: dict = None) -> Shop:
+        from core.shop import Shop  # Safe circular import
+
         existing = self.collection.find_one({"shop": shop_domain})
         if existing:
             self.log_action(
@@ -70,9 +72,8 @@ class Shops:
                     "message": "⚠️ Attempted to create shop but it already exists."
                 }
             )
-            return False
+            return Shop(shop_domain)  # ✅ return existing instance
 
-        from core.shop import Shop  # Safe circular import for class reuse
         defaults = settings or Shop.DEFAULT_SETTINGS.copy()
 
         self.collection.insert_one({
@@ -91,7 +92,8 @@ class Shops:
                 "message": "✨ New shop created with default settings."
             }
         )
-        return True
+
+        return Shop(shop_domain)  # ✅ return new instance
 
     def delete_shop(self, shop_domain: str, cleanup_related: bool = True):
         shop_record = self.collection.find_one({"shop": shop_domain})

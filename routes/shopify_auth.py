@@ -5,31 +5,30 @@ from fastapi.responses import RedirectResponse
 from core.Logger import AppLogger
 from core.shops import Shops
 from core.shop import Shop
-from core.config import APP_BASE_URL
+from core.config import SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_API_VERSION, APP_BASE_URL
+from core.clients.shopify_client import ShopifyClient
+from core.clients.shopify_client_lite import ShopifyClientLite
+from core.helpers.shopify_auth import exchange_token_and_scopes
 
 router = APIRouter(prefix="/auth/shopify")
 logger = AppLogger()
 shops = Shops()
+
 
 @router.get("/install")
 def install(shop: str):
     if not shop:
         raise HTTPException(status_code=400, detail="Missing shop parameter")
 
-    shop_instance = Shop(shop)
-    client = shop_instance.client
-
-    redirect_uri = f"{APP_BASE_URL}/auth/shopify/callback"
-    scopes = client.get_scopes()
-    permission_url = client.get_install_url(scopes, redirect_uri)
+    permission_url = ShopifyClient.generate_install_url(shop)
 
     logger.log(
         event="install_redirect",
         level="info",
         store=shop,
         data={
-            "redirect_uri": redirect_uri,
-            "scopes": scopes,
+            "redirect_uri": f"{APP_BASE_URL}/auth/shopify/callback",
+            "scopes": ShopifyClient.get_default_scopes(),
             "message": "🔗 Redirecting merchant to install screen."
         }
     )
@@ -46,26 +45,22 @@ def callback(request: Request):
 
     try:
         shop_instance = shops.get_by_domain(shop_domain) or shops.add_new_shop(shop_domain)
-        shop_instance = Shop(shop_domain)  # reload with saved record
-        client = shop_instance.client
 
-        token = client.exchange_token(params)
-        scopes = client.fetch_access_scopes()
+        # ✅ Use lite client to exchange token without requiring access token
+        temp_client = ShopifyClientLite(shop_domain)
 
-        previous_scopes = shop_instance.shop.get("scopes", [])
-        if previous_scopes and set(previous_scopes) != set(scopes):
-            shop_instance.log_action(
-                event="scope_changed",
-                level="info",
-                data={
-                    "message": "🔁 OAuth scope changed.",
-                    "previous": previous_scopes,
-                    "current": scopes
-                }
-            )
+        token = temp_client.exchange_token(params)
+        scopes = temp_client.fetch_access_scopes()
 
+        # ✅ Reload shop after saving token to ensure fresh data
         shop_instance.set_access_token(token, scopes)
         shop_instance.update_settings(Shop.DEFAULT_SETTINGS)
+        shop_instance.reload()
+
+        # ✅ Now safe to use full client with token
+        client = shop_instance.client
+        success = client.register_webhooks()
+        shop_instance.update_collections()
 
         shop_instance.log_action(
             event="shop_installed",
@@ -77,8 +72,6 @@ def callback(request: Request):
                 "settings": Shop.DEFAULT_SETTINGS
             }
         )
-
-        success = client.register_webhooks()
 
         return {
             "message": "App installed successfully.",

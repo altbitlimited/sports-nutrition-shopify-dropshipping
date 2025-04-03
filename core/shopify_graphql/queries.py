@@ -6,6 +6,7 @@ query getCollections($first: Int!) {
     edges {
       node {
         id
+        legacyResourceId
         title
         handle
       }

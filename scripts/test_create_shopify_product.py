@@ -17,12 +17,10 @@ def main(barcode: str, shop_domain: str):
         print(f"❌ Could not load product with barcode {barcode}: {e}")
         return
 
-    print("🔍 Checking product eligibility...")
-    if not product.is_enriched_for_listing():
-        print("❌ Not enriched.")
-        return
-    if not product.is_product_eligible(shop):
-        print("❌ Not eligible.")
+    print("🔍 Checking product readiness...")
+    ok, reason = product.is_ready_to_post_to_shopify(shop)
+    if not ok:
+        print(reason)
         return
 
     try:

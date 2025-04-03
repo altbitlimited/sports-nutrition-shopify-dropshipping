@@ -333,27 +333,35 @@ class Product:
         )
         return stock_level
 
-    def has_been_listed_to_shop(self, shop: Shop) -> bool:
+    def has_shop_listing(self, shop: Shop, statuses: tuple[str] = None) -> bool:
         for entry in self.product.get("shops", []):
             if entry.get("shop") == shop.domain:
-                return True
+                if statuses is None or entry.get("status") in statuses:
+                    return True
         return False
 
+    def is_ready_to_post_to_shopify(self, shop: Shop) -> tuple[bool, str]:
+        """
+        Determines if this product is eligible and ready to be posted to the given shop.
+        Blocks if it has already been created or is currently being processed.
+        """
+        if not self.is_enriched_for_listing():
+            return False, "❌ Product is not enriched."
+        if not self.is_product_eligible(shop):
+            return False, "❌ Product is not eligible for this shop."
+        if self.has_shop_listing(shop, statuses=("created",)):
+            return False, "❌ Product has already been created."
+        if self.has_shop_listing(shop, statuses=("create_processing",)):
+            return False, "❌ Product is being processed."
+        return True, "✅ Product is ready to be listed."
+
     def _upsert_shop_listing(self, shop: Shop, listing_data: dict):
-        """
-        Validates, merges, and inserts or updates a listing entry for a product-shop combo.
-        - Applies global and per-status defaults.
-        - Validates required fields per status.
-        - Ensures retry count is reset on success.
-        - Fails loudly on unknown status or unknown keys.
-        """
         from datetime import datetime
         now = datetime.utcnow()
         status = listing_data.get("status")
         listing_data["shop"] = shop.domain
         listing_data["updated_at"] = now
 
-        # --- Global defaults ---
         GLOBAL_DEFAULTS = {
             "supplier": None,
             "cost": None,
@@ -363,6 +371,7 @@ class Product:
             "round_to": None,
             "selling_price": None,
             "shopify_id": None,
+            "shopify_gid": None,
             "shopify_url": None,
             "shopify_variant_id": None,
             "shopify_handle": None,
@@ -370,26 +379,18 @@ class Product:
             "message": None,
         }
 
-        # --- Per-status config ---
         LISTING_CONFIGS = {
-            "create_pending": {
-                "required": [],
-                "defaults": {}
-            },
+            "create_pending": {"required": [], "defaults": {}},
             "created": {
                 "required": [
-                    "shopify_id", "shopify_variant_id", "shopify_url", "shopify_handle",
+                    "shopify_id", "shopify_gid", "shopify_variant_id", "shopify_url", "shopify_handle",
                     "supplier", "cost", "stock_level", "selling_price",
                     "margin_used", "rounding_used", "round_to"
                 ],
                 "defaults": {},
                 "reset_retry": True
             },
-            "unmanaged": {
-                "required": [],
-                "defaults": {}
-            },
-            # TODO: Add support for update_pending, updated, create_failed, update_failed
+            "unmanaged": {"required": [], "defaults": {}},
         }
 
         if status not in LISTING_CONFIGS:
@@ -397,21 +398,30 @@ class Product:
 
         config = LISTING_CONFIGS[status]
 
-        # --- Validate required fields ---
         for field in config.get("required", []):
-            if field not in listing_data or listing_data[field] is None:
+            if field not in listing_data or listing_data[field] in (None, "__clear__"):
                 raise ValueError(f"❌ Missing required field '{field}' for status '{status}'.")
 
-        # --- Merge defaults into listing ---
-        full_listing = GLOBAL_DEFAULTS.copy()
-        full_listing.update(config.get("defaults", {}))
-        full_listing.update(listing_data)
+        # Get current values
+        existing_entry = next((s for s in self.product.get("shops", []) if s["shop"] == shop.domain), None)
+        full_listing = existing_entry.copy() if existing_entry else GLOBAL_DEFAULTS.copy()
 
-        # --- Reset retry count on success-type statuses ---
+        # Merge config defaults
+        full_listing.update(config.get("defaults", {}))
+
+        # Merge incoming data
+        for k, v in listing_data.items():
+            if v == "__clear__":
+                full_listing[k] = None
+            else:
+                full_listing[k] = v
+
+        # Preserve created_at
+        full_listing["created_at"] = existing_entry.get("created_at", now) if existing_entry else now
+
         if config.get("reset_retry"):
             full_listing["retry_count"] = 0
 
-        # --- Validate against unexpected keys ---
         valid_keys = set(GLOBAL_DEFAULTS) | {"status", "shop", "created_at", "updated_at"}
         valid_keys.update(config.get("required", []))
         valid_keys.update(config.get("defaults", {}).keys())
@@ -420,18 +430,12 @@ class Product:
         if unexpected:
             raise ValueError(f"❌ Unexpected fields in listing_data: {unexpected}")
 
-        # --- Perform DB update ---
-        existing_entry = next((s for s in self.product.get("shops", []) if s["shop"] == shop.domain), None)
-
         if existing_entry:
-            full_listing["created_at"] = existing_entry.get("created_at", now)
-
             result = mongo.db.products.update_one(
                 {"barcode": self.barcode},
                 {"$set": {"shops.$[elem]": full_listing}},
                 array_filters=[{"elem.shop": shop.domain}]
             )
-
             if result.modified_count == 0:
                 self.log_action(
                     event="shop_listing_update_fallback_triggered",
@@ -447,7 +451,6 @@ class Product:
                     {"$push": {"shops": full_listing}}
                 )
         else:
-            full_listing["created_at"] = now
             mongo.db.products.update_one(
                 {"barcode": self.barcode},
                 {"$push": {"shops": full_listing}}
@@ -458,7 +461,6 @@ class Product:
                 data={"shop": shop.domain, "status": status, "message": "✨ New listing entry created for shop."}
             )
 
-        # --- Update in-memory copy ---
         self.product.setdefault("shops", [])
         for i, entry in enumerate(self.product["shops"]):
             if entry["shop"] == shop.domain:
@@ -610,6 +612,7 @@ class Product:
 
         response = shopify.create_product(product_payload, task_id=task_id)
         product_id = response["id"]
+        product_gid = response["gid"]
         handle = response.get("handle")
         url = f"https://{shop.domain}/products/{handle}" if handle else None
 
@@ -631,7 +634,7 @@ class Product:
         sku = self.product.get("barcode_lookup_data", {}).get("mpn", "")
 
         # 💵 Update variant
-        shopify.update_variant_bulk(product_id, {
+        shopify.update_variant_bulk(product_gid, {
             "id": variant_id,
             "price": str(selling_price),
             "inventoryItem": {
@@ -644,6 +647,7 @@ class Product:
         self.log_action("shopify_create_flow_completed", "success", {
             "shop": shop.domain,
             "product_id": product_id,
+            "product_gid": product_gid,
             "variant_id": variant_id,
             "handle": handle,
             "url": url,
@@ -653,6 +657,7 @@ class Product:
         self.mark_listed_to_shop(shop, {
             "status": "created",
             "shopify_id": product_id,
+            "shopify_gid": product_gid,
             "shopify_url": url,
             "shopify_variant_id": variant_id,
             "shopify_handle": handle,
@@ -674,6 +679,7 @@ class Product:
         for name in collection_names:
             success = shop.add_product_to_collection(
                 product_id=product_id,
+                product_gid=product_gid,
                 handle=name,
                 task_id=task_id
             )
@@ -688,15 +694,17 @@ class Product:
                 try:
                     created = shop.client.create_collection(title=name, task_id=task_id)
 
-                    # 🔃 Patch local collections cache in memory
-                    shop.shop.setdefault("collections", []).append({
+                    new_collection = {
                         "id": created["id"],
                         "title": created["title"],
                         "handle": created["handle"]
-                    })
+                    }
+
+                    shop.add_local_collection(new_collection)
 
                     retry_success = shop.add_product_to_collection(
                         product_id=product_id,
+                        product_gid=product_gid,
                         handle=name,
                         task_id=task_id
                     )
@@ -705,12 +713,14 @@ class Product:
                         self.log_action("collection_created_and_added", "info", {
                             "collection": name,
                             "product_id": product_id,
+                            "product_gid": product_gid,
                             "collection_id": created["id"]
                         }, task_id=task_id)
                     else:
                         self.log_action("collection_create_retry_failed", "warning", {
                             "collection": name,
                             "product_id": product_id,
+                            "product_gid": product_gid,
                             "message": "❌ Created collection but failed to add product."
                         }, task_id=task_id)
 
@@ -718,12 +728,14 @@ class Product:
                     self.log_action("collection_create_failed", "error", {
                         "collection": name,
                         "product_id": product_id,
+                        "product_gid": product_gid,
                         "message": "❌ Failed to create collection.",
                         "error": str(e)
                     }, task_id=task_id)
 
         return {
             "product_id": product_id,
+            "product_gid": product_gid,
             "variant_id": variant_id,
             "handle": handle,
             "url": url

@@ -4,7 +4,6 @@ from core.MongoManager import MongoManager
 from core.encryption import encrypt_token, decrypt_token
 from core.Logger import AppLogger
 from datetime import datetime
-from core.clients.shopify_client import ShopifyClient
 import difflib
 
 class Shop:
@@ -22,7 +21,6 @@ class Shop:
         self.domain = domain
         self.collection = self.mongo.shops
         self.shop = self.collection.find_one({"shop": domain})
-        self.client = ShopifyClient(self)
 
         if not self.shop:
             raise ValueError(f"Shop '{domain}' does not exist. Use Shops.add_new_shop() to create it.")
@@ -310,7 +308,8 @@ class Shop:
                     continue
                 if "id" in c and "title" in c and "handle" in c:
                     collections.append({
-                        "id": c["id"],
+                        "id": str(c["id"]),
+                        "gid": c["gid"],
                         "title": c["title"],
                         "handle": c["handle"]
                     })
@@ -433,19 +432,17 @@ class Shop:
 
     def resolve_collection_id(self, *, handle: str = None, title: str = None) -> str | None:
         """
-        Attempts to resolve a collection ID by handle or title.
+        Attempts to resolve a collection GID by handle or title.
         Prioritizes exact match, then falls back to fuzzy matching.
         Logs what strategy was used.
         """
         collections = self.shop.get("collections", [])
 
         if handle:
-            # Exact match on handle
             for c in collections:
                 if c.get("handle", "").strip().lower() == handle.strip().lower():
-                    return c["id"]
+                    return c.get("gid")
 
-            # Fuzzy fallback
             from difflib import get_close_matches
             all_handles = [c.get("handle", "") for c in collections]
             match = get_close_matches(handle.strip(), all_handles, n=1, cutoff=0.6)
@@ -454,17 +451,15 @@ class Shop:
                 for c in collections:
                     if c.get("handle") == matched:
                         self.log_action("collection_fuzzy_match_used", "info", {
-                            "input": handle, "matched": matched, "type": "handle", "collection_id": c["id"]
+                            "input": handle, "matched": matched, "type": "handle", "collection_gid": c.get("gid")
                         })
-                        return c["id"]
+                        return c.get("gid")
 
         if title:
-            # Exact match on title
             for c in collections:
                 if c.get("title", "").strip().lower() == title.strip().lower():
-                    return c["id"]
+                    return c.get("gid")
 
-            # Fuzzy fallback
             from difflib import get_close_matches
             all_titles = [c.get("title", "") for c in collections]
             match = get_close_matches(title.strip(), all_titles, n=1, cutoff=0.6)
@@ -473,9 +468,9 @@ class Shop:
                 for c in collections:
                     if c.get("title") == matched:
                         self.log_action("collection_fuzzy_match_used", "info", {
-                            "input": title, "matched": matched, "type": "title", "collection_id": c["id"]
+                            "input": title, "matched": matched, "type": "title", "collection_gid": c.get("gid")
                         })
-                        return c["id"]
+                        return c.get("gid")
 
         self.log_action("collection_match_not_found", "debug", {
             "handle": handle, "title": title, "message": "❌ No collection found via fuzzy or exact match."
@@ -485,6 +480,7 @@ class Shop:
     def add_product_to_collection(
             self,
             product_id: str,
+            product_gid: str,
             handle: str = None,
             title: str = None,
             task_id: str = None
@@ -501,6 +497,7 @@ class Shop:
                 level="warning",
                 data={
                     "product_id": product_id,
+                    "product_gid": product_gid,
                     "handle": handle,
                     "title": title,
                     "message": "❌ Could not resolve collection."
@@ -513,6 +510,7 @@ class Shop:
             self.client.add_product_to_collection(
                 collection_id=collection_id,
                 product_ids=[product_id],
+                product_gids=[product_gid],
                 task_id=task_id
             )
             return True
@@ -523,6 +521,7 @@ class Shop:
                 level="error",
                 data={
                     "product_id": product_id,
+                    "product_gid": product_gid,
                     "collection_id": collection_id,
                     "handle": handle,
                     "title": title,
@@ -532,3 +531,82 @@ class Shop:
                 task_id=task_id
             )
             return False
+
+    def add_local_collection(self, collection: dict):
+        """
+        Adds a collection to the shop's local memory and database, if not already present.
+        Expects a dict with keys: id, title, handle.
+        """
+        existing = self.shop.get("collections", [])
+        if any(str(c["id"]) == str(collection["id"]) for c in existing):
+            return False  # Already exists
+
+        self.shop.setdefault("collections", []).append(collection)
+        self.collection.update_one(
+            {"shop": self.domain},
+            {"$push": {"collections": collection}}
+        )
+
+        self.log_action(
+            event="local_collection_added",
+            level="info",
+            data={"collection": collection, "message": "📚 Collection added to local + DB."}
+        )
+        return True
+
+    def update_local_collection(self, collection: dict) -> bool:
+        """
+        Updates an existing collection entry in the shop record.
+        Returns True if updated, False if no match was found.
+        """
+        self.reload()
+        collections = self.shop.get("collections", [])
+
+        updated = False
+        for idx, existing in enumerate(collections):
+            if str(existing["id"]) == str(collection["id"]):
+                collections[idx] = {
+                    "id": str(collection["id"]),
+                    "gid": str(collection["gid"]),
+                    "title": collection.get("title"),
+                    "handle": collection.get("handle")
+                }
+                updated = True
+                break
+
+        if updated:
+            self.collection.update_one(
+                {"shop": self.domain},
+                {"$set": {"collections": collections}}
+            )
+        return updated
+
+    def remove_local_collection(self, collection_id: str) -> bool:
+        """
+        Removes a collection from the shop document by ID.
+        Returns True if a collection was removed, False otherwise.
+        """
+        self.reload()
+        collections = self.shop.get("collections", [])
+        new_collections = [c for c in collections if str(c["id"]) != str(collection_id)]
+
+        if len(new_collections) == len(collections):
+            return False
+
+        self.collection.update_one(
+            {"shop": self.domain},
+            {"$set": {"collections": new_collections}}
+        )
+        return True
+
+    @property
+    def client(self):
+        from core.clients.shopify_client import ShopifyClient
+        token = self.get_access_token()
+        if not token:
+            self.log_action("webhook_token_missing", "error", {
+                "shop": self.domain,
+                "message": "❌ Cannot initialize ShopifyClient — access token is missing."
+            })
+            raise ValueError(f"❌ ShopifyClient init failed: access token missing for {self.domain}")
+        return ShopifyClient(self)

@@ -42,80 +42,64 @@ async def handle_app_uninstalled(shop_domain: str, payload: dict):
 async def handle_collection_created(shop_domain: str, payload: dict):
     shop = Shop(shop_domain)
     collection = {
-        "id": payload["id"],
+        "id": str(payload["id"]),
+        "gid": payload["admin_graphql_api_id"],
         "title": payload.get("title"),
         "handle": payload.get("handle"),
     }
 
-    shop.reload()  # Get latest state
-    existing = shop.shop.get("collections", [])
-    if not any(c["id"] == collection["id"] for c in existing):
-        existing.append(collection)
-        shop.collection.update_one(
-            {"shop": shop_domain},
-            {"$set": {"collections": existing}}
-        )
+    added = shop.add_local_collection(collection)
 
+    if added:
         shop.log_action(
             event="collection_created_webhook",
             level="info",
             data={"collection": collection, "message": "📦 Collection created via webhook."}
         )
 
+
 async def handle_collection_updated(shop_domain: str, payload: dict):
     shop = Shop(shop_domain)
-    collection_id = payload["id"]
     updated_data = {
-        "id": collection_id,
+        "id": str(payload["id"]),
+        "gid": payload["admin_graphql_api_id"],
         "title": payload.get("title"),
         "handle": payload.get("handle"),
     }
 
-    shop.reload()
-    collections = shop.shop.get("collections", [])
-    updated = False
-
-    for idx, col in enumerate(collections):
-        if col["id"] == collection_id:
-            collections[idx] = updated_data
-            updated = True
-            break
-
-    if updated:
-        shop.collection.update_one(
-            {"shop": shop_domain},
-            {"$set": {"collections": collections}}
-        )
+    if shop.update_local_collection(updated_data):
         shop.log_action(
             event="collection_updated_webhook",
             level="info",
-            data={"collection": updated_data, "message": "♻️ Collection updated via webhook."}
+            data={
+                "collection": updated_data,
+                "message": "♻️ Collection updated via webhook."
+            }
         )
+
 
 async def handle_collection_deleted(shop_domain: str, payload: dict):
     shop = Shop(shop_domain)
-    collection_id = payload["id"]
+    collection_id = str(payload.get("id"))
 
-    shop.reload()
-    collections = shop.shop.get("collections", [])
-    filtered = [c for c in collections if c["id"] != collection_id]
-
-    if len(filtered) < len(collections):
-        shop.collection.update_one(
-            {"shop": shop_domain},
-            {"$set": {"collections": filtered}}
-        )
-
+    if shop.remove_local_collection(collection_id):
         shop.log_action(
             event="collection_deleted_webhook",
             level="info",
-            data={"collection_id": collection_id, "message": "🗑️ Collection deleted via webhook."}
+            data={
+                "collection_id": collection_id,
+                "message": "🗑️ Collection deleted via webhook."
+            }
         )
 
+import json
 async def handle_product_deleted(shop_domain: str, payload: dict):
+    print('####')
+    print(json.dumps(payload, indent=4))
+    print('####')
     from core.product import Product
     shop = Shop(shop_domain)
-    product_id = payload.get("id")
+    product_id = str(payload.get("id"))
 
     if not product_id:
         return
@@ -157,7 +141,7 @@ WEBHOOK_HANDLERS = {
 
 # --- Central Webhook Endpoint ---
 
-@router.post("/{topic}")
+@router.post("/{topic:path}")
 async def handle_shopify_webhook(
     topic: str,
     request: Request,
@@ -187,6 +171,14 @@ async def handle_shopify_webhook(
         raise HTTPException(status_code=400, detail=f"Unsupported webhook topic: {topic}")
 
     payload = await request.json()
+
+    logger.log(
+        event="webhook_received",
+        level="debug",
+        store=x_shopify_shop_domain,
+        data={"topic": topic, "payload": payload}
+    )
+
     await WEBHOOK_HANDLERS[topic](x_shopify_shop_domain, payload)
 
     return {"status": "ok", "message": f"✅ Webhook '{topic}' handled"}

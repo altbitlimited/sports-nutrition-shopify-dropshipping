@@ -2,7 +2,10 @@ ngrok http --url=altbit.ngrok.io 8000
 
 uvicorn main:app --reload
 
-Test Task
+Install app
+https://altbit.ngrok.io/auth/shopify/install?shop=supplementsteststore.myshopify.com
+
+Test Tasks
 python -m core.tasks.prune_old_logs prune_old_logs
 
 python -m core.tasks.discover_new_products discover_new_products

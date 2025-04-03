@@ -3,6 +3,7 @@ mutation productCreate($input: ProductInput!) {
   productCreate(input: $input) {
     product {
       id
+      legacyResourceId
       handle
       variants(first: 1) {
         edges {

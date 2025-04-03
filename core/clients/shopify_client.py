@@ -4,6 +4,7 @@ import time
 import requests
 import mimetypes
 from typing import Dict, Any
+from urllib.parse import urlparse
 
 from core.config import SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_API_VERSION, APP_BASE_URL
 from core.shopify_graphql.mutations import (
@@ -22,17 +23,35 @@ class ShopifyGraphQLError(Exception):
 
 class ShopifyClient:
     def __init__(self, shop):
-        from core.shop import Shop  # moved here to avoid circular import
+        from core.shop import Shop  # avoid circular import
+
         if not isinstance(shop, Shop):
             raise TypeError("Expected a Shop instance")
+
         self.shop = shop
         self.domain = shop.domain
         self.token = shop.get_access_token()
+
+        if not self.token:
+            self.shop.log_action(
+                event="webhook_token_missing",
+                level="error",
+                data={
+                    "shop": self.domain,
+                    "message": "❌ Cannot initialize ShopifyClient — access token is missing."
+                }
+            )
+            raise ValueError(f"❌ ShopifyClient init failed: access token missing for {self.domain}")
+
         self.endpoint = f"https://{self.domain}/admin/api/{SHOPIFY_API_VERSION}/graphql.json"
         self.headers = {
             "Content-Type": "application/json",
             "X-Shopify-Access-Token": self.token,
         }
+
+    @staticmethod
+    def get_default_scopes() -> list[str]:
+        return ["read_products", "write_products"]
 
     def _post_graphql(self, query: str, variables: Dict[str, Any], task_id=None) -> Dict[str, Any]:
         for attempt in range(5):
@@ -137,7 +156,8 @@ class ShopifyClient:
 
         product = result["product"]
         product_info = {
-            "id": product["id"],
+            "id": product["legacyResourceId"],
+            "gid": product["id"],
             "handle": product.get("handle"),
             "url": product.get("onlineStoreUrl"),
             "variants": product.get("variants", {})  # includes edges
@@ -189,7 +209,8 @@ class ShopifyClient:
             edges = data["collections"]["edges"]
             collections = [
                 {
-                    "id": edge["node"]["id"],
+                    "id": edge["node"]["legacyResourceId"],  # REST ID
+                    "gid": edge["node"]["id"],  # GraphQL ID
                     "title": edge["node"]["title"],
                     "handle": edge["node"]["handle"]
                 }
@@ -221,7 +242,20 @@ class ShopifyClient:
         return f"{APP_BASE_URL}/auth/shopify/callback"
 
     def get_scopes(self) -> list:
-        return ["read_products", "write_products"]
+        return self.get_default_scopes()
+
+    @staticmethod
+    def generate_install_url(shop_domain: str) -> str:
+        """
+        Generates the Shopify install URL for OAuth flow, using static scopes and redirect URI.
+        """
+        import shopify
+        shopify.Session.setup(api_key=SHOPIFY_API_KEY, secret=SHOPIFY_API_SECRET)
+        session = shopify.Session(shop_domain, SHOPIFY_API_VERSION)
+        scopes = ShopifyClient.get_default_scopes()
+        redirect_uri = f"{APP_BASE_URL}/auth/shopify/callback"
+        return session.create_permission_url(scopes, redirect_uri)
+
 
     def exchange_token(self, params: dict) -> str:
         shopify.Session.setup(api_key=SHOPIFY_API_KEY, secret=SHOPIFY_API_SECRET)
@@ -240,7 +274,34 @@ class ShopifyClient:
     def register_webhooks(self, task_id=None) -> bool:
         """
         Registers essential Shopify webhooks for the app.
+        - Validates APP_BASE_URL
+        - Deletes outdated webhooks (same topic but different address)
+        - Registers new webhooks if missing
         """
+        import shopify
+        from core.config import APP_BASE_URL
+
+        if not APP_BASE_URL or not isinstance(APP_BASE_URL, str):
+            self.shop.log_action("webhook_config_error", "error", {
+                "message": "❌ APP_BASE_URL is missing or invalid."
+            }, task_id=task_id)
+            raise ValueError("APP_BASE_URL is not set.")
+
+        parsed = urlparse(APP_BASE_URL)
+        if not parsed.scheme or not parsed.netloc:
+            self.shop.log_action("webhook_config_error", "error", {
+                "message": f"❌ APP_BASE_URL is malformed: {APP_BASE_URL}"
+            }, task_id=task_id)
+            raise ValueError("APP_BASE_URL must be a valid URL.")
+
+        # Validate token
+        if not self.token:
+            self.shop.log_action("webhook_token_missing", "error", {
+                "message": "❌ Cannot register webhooks — access token is missing.",
+                "shop": self.shop.domain
+            }, task_id=task_id)
+            return False
+
         topics = [
             "app/uninstalled",
             "collections/create",
@@ -250,49 +311,108 @@ class ShopifyClient:
         ]
 
         success = True
+        registered = []
 
-        for topic in topics:
-            webhook_data = {
-                "topic": topic,
-                "address": f"{APP_BASE_URL}/webhooks/shopify/{topic}",
-                "format": "json"
-            }
+        try:
+            shopify.ShopifyResource.activate_session(
+                shopify.Session(self.domain, SHOPIFY_API_VERSION, self.token)
+            )
 
-            try:
-                import shopify
-                shopify.ShopifyResource.activate_session(shopify.Session(self.domain, SHOPIFY_API_VERSION, self.token))
-                webhook = shopify.Webhook.create(webhook_data)
+            existing_hooks = shopify.Webhook.find()
+
+            for topic in topics:
+                target_url = f"{APP_BASE_URL}/webhooks/shopify/{topic}"
+
+                matched_hook = next((hook for hook in existing_hooks if hook.topic == topic), None)
+
+                if matched_hook:
+                    if matched_hook.address != target_url:
+                        try:
+                            matched_hook.destroy()
+                            self.shop.log_action("webhook_deleted_existing", "info", {
+                                "topic": topic,
+                                "webhook_id": matched_hook.id,
+                                "previous_address": matched_hook.address,
+                                "created_at": getattr(matched_hook, "created_at", None),
+                                "message": "💥 Deleted existing webhook due to address mismatch."
+                            }, task_id=task_id)
+                        except Exception as delete_err:
+                            self.shop.log_action("webhook_delete_failed", "warning", {
+                                "topic": topic,
+                                "webhook_id": matched_hook.id,
+                                "error": str(delete_err)
+                            }, task_id=task_id)
+                            success = False
+                            continue
+                    else:
+                        self.shop.log_action("webhook_already_exists", "debug", {
+                            "topic": topic,
+                            "address": target_url
+                        }, task_id=task_id)
+                        continue
+
+                # Create new webhook
+                webhook = shopify.Webhook.create({
+                    "topic": topic,
+                    "address": target_url,
+                    "format": "json"
+                })
 
                 if webhook.errors:
-                    errors = webhook.errors.full_messages()
-                    self.shop.log_action(
-                        event="webhook_register_failed",
-                        level="warning",
-                        data={"topic": topic, "errors": errors}
-                    )
+                    try:
+                        raw_errors = webhook.errors.full_messages()
+                        errors = [str(e) for e in raw_errors if e is not None]
+                    except Exception as err:
+                        self.shop.log_action("webhook_errors_structure_debug", "debug", {
+                            "topic": topic,
+                            "raw_errors_type": str(type(webhook.errors)),
+                            "raw_errors_dir": dir(webhook.errors),
+                            "raw_errors_dict": getattr(webhook.errors, 'errors', 'Unavailable'),
+                            "exception": str(err)
+                        }, task_id=task_id)
+                        errors = [f"⚠️ full_messages() failed: {err}"]
+
+                    self.shop.log_action("webhook_register_failed", "warning", {
+                        "topic": topic,
+                        "errors": errors
+                    }, task_id=task_id)
                     success = False
                 else:
-                    self.shop.log_action(
-                        event="webhook_registered",
-                        level="info",
-                        data={"topic": topic, "message": f"📬 Webhook '{topic}' registered."}
-                    )
-            except Exception as e:
-                self.shop.log_action(
-                    event="webhook_register_exception",
-                    level="error",
-                    data={"topic": topic, "error": str(e)}
-                )
-                success = False
-            finally:
-                shopify.ShopifyResource.clear_session()
+                    self.shop.log_action("webhook_registered", "info", {
+                        "topic": topic,
+                        "address": target_url,
+                        "webhook_id": webhook.id,
+                        "message": f"📬 Webhook '{topic}' registered."
+                    }, task_id=task_id)
+                    registered.append({"topic": topic, "address": target_url})
+
+        except Exception as e:
+            import traceback
+
+            # Capture traceback in log-friendly string
+            trace = traceback.format_exc()
+
+            self.shop.log_action("webhook_register_exception", "error", {
+                "message": "❌ Error registering webhooks.",
+                "error_type": type(e).__name__,
+                "error_str": str(e),
+                "traceback": trace
+            }, task_id=task_id)
+            success = False
+        finally:
+            shopify.ShopifyResource.clear_session()
+
+        if registered:
+            self.shop.log_action("webhooks_registered_summary", "info", {
+                "registered_webhooks": registered
+            }, task_id=task_id)
 
         return success
 
-    def add_product_to_collection(self, collection_id: str, product_ids: list[str], task_id=None) -> dict:
+    def add_product_to_collection(self, collection_id: str, product_ids: list[str], product_gids: list[str], task_id=None) -> dict:
         variables = {
             "id": collection_id,
-            "productIds": product_ids
+            "productIds": product_gids
         }
 
         data = self._post_graphql(COLLECTION_ADD_PRODUCTS_MUTATION, variables, task_id=task_id)

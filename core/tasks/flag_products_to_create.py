@@ -36,7 +36,8 @@ def flag_products_to_create():
                 try:
                     product = Product(barcode)
 
-                    if product.has_been_listed_to_shop(shop):
+                    if product.has_shop_listing(shop):
+                        # already known, skip
                         logger.log(
                             event="product_already_flagged",
                             level="debug",
