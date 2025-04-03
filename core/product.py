@@ -13,6 +13,8 @@ import time
 mongo = MongoManager()
 logger = AppLogger(mongo)
 
+MAX_FAIL_COUNT = 3
+
 class Product:
     def __init__(self, barcode: str):
         self.barcode = barcode
@@ -367,8 +369,6 @@ class Product:
         status = listing_data.get("status")
         listing_data["shop"] = shop.domain
         listing_data["updated_at"] = now
-
-        MAX_FAIL_COUNT = 3
 
         GLOBAL_DEFAULTS = {
             "supplier": None,

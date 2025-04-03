@@ -23,6 +23,17 @@ python -m core.tasks.enrich_products_ai enrich_products_ai --barcodes 8100282925
 
 python -m core.tasks.flag_products_to_create flag_products_to_create
 
+# Full run
+python -m core.tasks.create_products_on_shopify create_products_on_shopify
+# Dry-run only for one shop
+python -m core.tasks.create_products_on_shopify create_products_on_shopify --shop supplementsteststore.myshopify.com --dry-run
+# Limit to first 5 products across all shops
+python -m core.tasks.create_products_on_shopify create_products_on_shopify --limit 5
+# Process 2 specific barcodes only
+python -m core.tasks.create_products_on_shopify create_products_on_shopify --barcode 12345 67890
+# Run real post for one shop and one barcode
+python -m core.tasks.create_products_on_shopify create_products_on_shopify --shop supplementsteststore.myshopify.com --barcode 850001610292
+
 python -m scripts.test_generate_listing --barcode 810028292598 --shop supplementsteststore.myshopify.com
 python -m scripts.test_create_shopify_product --barcode 850001610292 --shop supplementsteststore.myshopify.com
 python -m scripts.test_create_shopify_product --barcode 857640006172 --shop supplementsteststore.myshopify.com

@@ -34,3 +34,7 @@
   name = "flag_products_to_create"
   schedule = "0 5 * * *"
   command = "python3 core/tasks/flag_products_to_create.py flag_products_to_create"
+[[cron]]
+  name = "flag_products_to_create"
+  schedule = "0 6 * * *"
+  command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"

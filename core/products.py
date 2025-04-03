@@ -4,8 +4,8 @@ from core.MongoManager import MongoManager
 from core.product import Product
 from core.shop import Shop
 from core.Logger import AppLogger
-from datetime import datetime
-
+from core.product import MAX_FAIL_COUNT
+from datetime import datetime, timedelta
 
 class Products:
     def __init__(self):
@@ -215,3 +215,84 @@ class Products:
         )
 
         return eligible_products
+
+    def get_products_ready_for_posting(self) -> list[tuple[Product, Shop]]:
+        """
+        Uses an aggregation pipeline to find product-shop pairs that are:
+        - status 'create_pending'
+        - OR 'create_error' with backoff period elapsed
+        Skips entries where error_count >= MAX_FAIL_COUNT
+        Returns list of (Product, Shop) tuples
+        """
+        now = datetime.utcnow()
+
+        pipeline = [
+            {"$unwind": "$shops"},
+            {"$match": {
+                "shops.status": {"$in": ["create_pending", "create_error"]},
+                "shops.error_count": {"$lt": MAX_FAIL_COUNT}
+            }},
+            {"$addFields": {
+                "shop_status": "$shops.status",
+                "shop_error_count": "$shops.error_count",
+                "shop_updated_at": "$shops.updated_at",
+                "shop_domain": "$shops.shop",
+                "barcode": "$barcode"
+            }},
+            {"$project": {
+                "_id": 0,
+                "barcode": 1,
+                "shop_domain": 1,
+                "shop_status": 1,
+                "shop_error_count": 1,
+                "shop_updated_at": 1
+            }}
+        ]
+
+        raw_entries = list(self.collection.aggregate(pipeline))
+        eligible_pairs = []
+
+        for entry in raw_entries:
+            status = entry["shop_status"]
+            error_count = entry["shop_error_count"]
+            updated_at = entry.get("shop_updated_at")
+
+            if status == "create_pending":
+                pass  # always eligible
+            elif status == "create_error":
+                if not updated_at:
+                    continue  # can't retry without a timestamp
+
+                # Dynamic exponential backoff: 6 * 2^(n-1)
+                wait_hours = 6 * (2 ** (error_count - 1))
+                retry_time = updated_at + timedelta(hours=wait_hours)
+
+                if retry_time > now:
+                    continue  # backoff still active
+
+            try:
+                product = Product(entry["barcode"])
+                shop = Shop(entry["shop_domain"])
+                eligible_pairs.append((product, shop))
+            except Exception as e:
+                self.log_action(
+                    event="product_shop_instantiate_failed",
+                    level="warning",
+                    data={
+                        "barcode": entry["barcode"],
+                        "shop_domain": entry["shop_domain"],
+                        "error": str(e),
+                        "message": "⚠️ Failed to instantiate Product or Shop object from pipeline result."
+                    }
+                )
+
+        self.log_action(
+            event="products_ready_for_posting_pipeline",
+            level="info",
+            data={
+                "count": len(eligible_pairs),
+                "message": f"✅ Found {len(eligible_pairs)} Product-Shop pairs ready for listing."
+            }
+        )
+
+        return eligible_pairs
