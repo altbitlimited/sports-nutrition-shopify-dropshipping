@@ -348,13 +348,12 @@ class Product:
         - Fails loudly on unknown status or unknown keys.
         """
         from datetime import datetime
-
         now = datetime.utcnow()
         status = listing_data.get("status")
         listing_data["shop"] = shop.domain
         listing_data["updated_at"] = now
 
-        # --- Global + per-status config ---
+        # --- Global defaults ---
         GLOBAL_DEFAULTS = {
             "supplier": None,
             "cost": None,
@@ -367,9 +366,11 @@ class Product:
             "shopify_url": None,
             "shopify_variant_id": None,
             "shopify_handle": None,
-            "retry_count": 0
+            "retry_count": 0,
+            "message": None,
         }
 
+        # --- Per-status config ---
         LISTING_CONFIGS = {
             "create_pending": {
                 "required": [],
@@ -384,11 +385,11 @@ class Product:
                 "defaults": {},
                 "reset_retry": True
             },
-            # Note for future:
-            # "update_pending": {...},
-            # "updated": {...},
-            # "create_failed": {...},
-            # "update_failed": {...}
+            "unmanaged": {
+                "required": [],
+                "defaults": {}
+            },
+            # TODO: Add support for update_pending, updated, create_failed, update_failed
         }
 
         if status not in LISTING_CONFIGS:
@@ -401,16 +402,16 @@ class Product:
             if field not in listing_data or listing_data[field] is None:
                 raise ValueError(f"❌ Missing required field '{field}' for status '{status}'.")
 
-        # --- Apply defaults ---
+        # --- Merge defaults into listing ---
         full_listing = GLOBAL_DEFAULTS.copy()
         full_listing.update(config.get("defaults", {}))
         full_listing.update(listing_data)
 
-        # --- Reset retry count if needed ---
+        # --- Reset retry count on success-type statuses ---
         if config.get("reset_retry"):
             full_listing["retry_count"] = 0
 
-        # --- Validate against unexpected fields ---
+        # --- Validate against unexpected keys ---
         valid_keys = set(GLOBAL_DEFAULTS) | {"status", "shop", "created_at", "updated_at"}
         valid_keys.update(config.get("required", []))
         valid_keys.update(config.get("defaults", {}).keys())
@@ -419,7 +420,7 @@ class Product:
         if unexpected:
             raise ValueError(f"❌ Unexpected fields in listing_data: {unexpected}")
 
-        # --- Write to DB ---
+        # --- Perform DB update ---
         existing_entry = next((s for s in self.product.get("shops", []) if s["shop"] == shop.domain), None)
 
         if existing_entry:
@@ -457,7 +458,7 @@ class Product:
                 data={"shop": shop.domain, "status": status, "message": "✨ New listing entry created for shop."}
             )
 
-        # --- Update local memory copy ---
+        # --- Update in-memory copy ---
         self.product.setdefault("shops", [])
         for i, entry in enumerate(self.product["shops"]):
             if entry["shop"] == shop.domain:
@@ -466,20 +467,22 @@ class Product:
         else:
             self.product["shops"].append(full_listing)
 
+        return full_listing
+
     def mark_listed_to_shop(self, shop: Shop, listing_data: dict):
         """
         Public-facing method to mark a product as listed to a specific shop,
         delegating the heavy lifting to _upsert_shop_listing.
         """
-        self._upsert_shop_listing(shop, listing_data)
+        updated_listing_data = self._upsert_shop_listing(shop, listing_data)
 
         self.log_action(
             event="product_marked_as_listed",
             level="info",
             data={
                 "shop": shop.domain,
-                "listing_data": listing_data,
-                "message": "📌 Product marked as listed or updated for shop."
+                "listing_data": updated_listing_data,
+                "message": "📌 Shop product listing updated."
             }
         )
 

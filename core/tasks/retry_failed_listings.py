@@ -53,7 +53,7 @@ def retry_failed_listings():
 
             try:
                 product = Product(barcode)
-                product._upsert_shop_listing(shop, {
+                product.mark_listed_to_shop(shop, {
                     **listing,
                     "status": "create_pending",
                     "retry_count": retry_count + 1
@@ -92,7 +92,6 @@ def retry_failed_listings():
         event="retry_failed_listings",
         success=retried,
         failed=failed,
-        extra={"skipped": skipped},
         duration=duration
     )
 

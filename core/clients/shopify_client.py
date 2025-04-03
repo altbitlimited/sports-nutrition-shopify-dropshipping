@@ -245,7 +245,8 @@ class ShopifyClient:
             "app/uninstalled",
             "collections/create",
             "collections/update",
-            "collections/delete"
+            "collections/delete",
+            "products/delete",
         ]
 
         success = True

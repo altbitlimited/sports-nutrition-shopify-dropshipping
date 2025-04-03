@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Request, Header, HTTPException
 import hmac, hashlib, base64
-
+from datetime import datetime
 from core.config import SHOPIFY_API_SECRET
 from core.shops import Shops
 from core.shop import Shop
 from core.Logger import AppLogger
+from core.MongoManager import MongoManager
+mongo = MongoManager()
 
 router = APIRouter(prefix="/webhooks/shopify")
 logger = AppLogger()
@@ -60,7 +62,6 @@ async def handle_collection_created(shop_domain: str, payload: dict):
             data={"collection": collection, "message": "📦 Collection created via webhook."}
         )
 
-
 async def handle_collection_updated(shop_domain: str, payload: dict):
     shop = Shop(shop_domain)
     collection_id = payload["id"]
@@ -91,7 +92,6 @@ async def handle_collection_updated(shop_domain: str, payload: dict):
             data={"collection": updated_data, "message": "♻️ Collection updated via webhook."}
         )
 
-
 async def handle_collection_deleted(shop_domain: str, payload: dict):
     shop = Shop(shop_domain)
     collection_id = payload["id"]
@@ -112,6 +112,38 @@ async def handle_collection_deleted(shop_domain: str, payload: dict):
             data={"collection_id": collection_id, "message": "🗑️ Collection deleted via webhook."}
         )
 
+async def handle_product_deleted(shop_domain: str, payload: dict):
+    from core.product import Product
+    shop = Shop(shop_domain)
+    product_id = payload.get("id")
+
+    if not product_id:
+        return
+
+    result = mongo.db.products.find_one(
+        {"shops": {"$elemMatch": {"shop": shop.domain, "shopify_id": product_id}}},
+        {"barcode": 1}
+    )
+
+    if not result:
+        shop.log_action("product_delete_webhook_not_found", "warning", {
+            "shopify_id": product_id,
+            "message": "⚠️ Received delete webhook but could not find product by ID"
+        })
+        return
+
+    product = Product(result["barcode"])
+
+    product.mark_listed_to_shop(shop, {
+        "status": "unmanaged",
+        "message": "deleted_from_shopify"
+    })
+
+    shop.log_action("product_unmanaged_via_webhook", "info", {
+        "barcode": product.barcode,
+        "shopify_id": product_id,
+        "message": "🛑 Product marked as unmanaged after Shopify deletion."
+    })
 
 # --- Webhook Topic Registry ---
 
@@ -120,6 +152,7 @@ WEBHOOK_HANDLERS = {
     "collections/create": handle_collection_created,
     "collections/update": handle_collection_updated,
     "collections/delete": handle_collection_deleted,
+    "products/delete": handle_product_deleted,
 }
 
 # --- Central Webhook Endpoint ---
