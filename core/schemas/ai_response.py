@@ -73,7 +73,7 @@ class AIResponse(BaseModel):
     )
     description: str = Field(
         ..., title="Description",
-        description="HTML formatted full product description including all required structure and bullet points"
+        description="HTML formatted full product description including all required structure and bullet points. You must not mention expiry date, this description needs to be relevant regardless of date"
     )
     snippet: str = Field(
         ..., title="Snippet",

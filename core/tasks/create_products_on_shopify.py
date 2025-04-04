@@ -158,7 +158,7 @@ def _process_shop_products(shop, products, task_id, dry_run):
                 "shop": shop.domain,
                 "message": "✅ Product successfully created on Shopify."
             }, task_id=task_id)
-            time.sleep(1)
+            time.sleep(3)
             success += 1
         except Exception as e:
             product.log_action("shopify_product_create_failed", "error", {

@@ -1,5 +1,3 @@
-# core/tasks/enrich_products_ai.py
-
 import sys
 import time
 import random
@@ -32,6 +30,7 @@ SYSTEM_PROMPT = (
     "Talk about why this specific product and brand is a good choice of this type of product.\n"
     "If describing a specific flavour, we try to be super descriptive with things such as \"imagine the taste of your grandma's warm apple pie on a cold winter morning\" or \"the smell of walking into a bakery when a fresh batch of bread has just been taken out of the oven\". Do not use these examples directly but it gives you an idea of what we strive for.\n"
     "Finish with a bullet point list of this product's benefits using emoji bullets.\n"
+    "You must not mention expiry dates, this description needs to be relevant regardless of date\n"
     "===END STORE DESCRIPTION==="
 )
 
@@ -41,34 +40,37 @@ USER_PROMPT_TEMPLATE = (
     "\nUse British English."
 )
 
+TOKEN_LIMIT = 30000
+MINUTE_WINDOW = 60.0
 RATE_LIMIT_DELAY = 1.5
-rate_limit_lock = threading.Lock()
-last_request_time = [0.0]
 
-def simulate_openai_response(barcode):
-    if barcode == "857640006424":
-        return AIResponse(
-            title="Ghost Whey Protein – Peanut Butter Cereal Milk – 924g – 26 Servings",
-            description="<h3>The ultimate throwback flavour for grown-up gains</h3><p>...</p>",
-            snippet="Peanut butter meets cereal milk in this nostalgic, high-protein shake...",
-            product_type="Protein Powder",
-            suggested_use="Mix one scoop with 250-300ml...",
-            ingredients=["Whey protein Isolate 90%", "..."],
-            nutritional_facts=[],
-            tags=["ghost", "protein", "..."],
-            seo_title="Ghost Whey Protein Peanut Butter Cereal Milk – 924g",
-            seo_description="Peanut Butter Cereal Milk meets 25g protein...",
-            primary_collection="Protein Powders",
-            secondary_collections=["Ghost"]
-        )
-    return None
+token_lock = threading.Lock()
+token_usage = {"count": 0, "window_start": time.time()}
 
-def rate_limited_openai_call(prompt):
-    with rate_limit_lock:
-        elapsed = time.time() - last_request_time[0]
-        if elapsed < RATE_LIMIT_DELAY:
-            time.sleep(RATE_LIMIT_DELAY - elapsed)
-        last_request_time[0] = time.time()
+
+def estimate_token_usage(text):
+    return int(len(text.split()) * 1.5)
+
+
+def token_aware_openai_call(prompt, estimated_tokens):
+    while True:
+        with token_lock:
+            now = time.time()
+            if now - token_usage["window_start"] > MINUTE_WINDOW:
+                token_usage["count"] = 0
+                token_usage["window_start"] = now
+
+            if token_usage["count"] + estimated_tokens <= TOKEN_LIMIT:
+                token_usage["count"] += estimated_tokens
+                break
+
+            sleep_time = MINUTE_WINDOW - (now - token_usage["window_start"])
+            sleep_time = max(sleep_time, 0.1)
+            logger.log("openai_tpm_delay", level="debug", data={
+                "message": f"⏳ Waiting {round(sleep_time, 2)}s due to TPM budget...",
+                "estimated_tokens": estimated_tokens
+            })
+        time.sleep(sleep_time)
 
     return openai_client.beta.chat.completions.parse(
         model=OPENAI_MODEL,
@@ -80,11 +82,13 @@ def rate_limited_openai_call(prompt):
         response_format=AIResponse
     )
 
+
 def calculate_costs(input_tokens, output_tokens, model=OPENAI_MODEL):
     pricing = OPENAI_PRICING.get(model, OPENAI_PRICING['gpt-4o'])
     input_cost = (input_tokens / 1000) * pricing["cost_per_1k_input_tokens"]
     output_cost = (output_tokens / 1000) * pricing["cost_per_1k_output_tokens"]
     return input_cost + output_cost, input_cost, output_cost
+
 
 def enrich_product(barcode, task_id=None, stats=None):
     logger.log("ai_enriching_product", level="info", task_id=task_id, data={"barcode": barcode})
@@ -111,20 +115,15 @@ def enrich_product(barcode, task_id=None, stats=None):
             stats["success"] += 1
         return
 
-    if USE_DUMMY_DATA:
-        simulated = simulate_openai_response(barcode)
-        product.update_product(ai_generated_data=simulated.dict(), ai_generate_status="success")
-        if stats:
-            stats["success"] += 1
-        return
-
     prompt = USER_PROMPT_TEMPLATE.format(
         barcode_lookup=barcode_lookup,
         supplier_data=supplier_raw
     )
 
+    estimated_tokens = estimate_token_usage(prompt)
+
     try:
-        response = rate_limited_openai_call(prompt)
+        response = token_aware_openai_call(prompt, estimated_tokens)
         output = response.choices[0].message.parsed
         output_dict = output.model_dump(mode="json")
 
