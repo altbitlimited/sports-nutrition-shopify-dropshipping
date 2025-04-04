@@ -53,6 +53,9 @@ def estimate_token_usage(text):
 
 
 def token_aware_openai_call(prompt, estimated_tokens):
+    retries = 0
+    max_retries = 5
+
     while True:
         with token_lock:
             now = time.time()
@@ -72,15 +75,31 @@ def token_aware_openai_call(prompt, estimated_tokens):
             })
         time.sleep(sleep_time)
 
-    return openai_client.beta.chat.completions.parse(
-        model=OPENAI_MODEL,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt}
-        ],
-        temperature=0.7,
-        response_format=AIResponse
-    )
+    while retries <= max_retries:
+        try:
+            return openai_client.beta.chat.completions.parse(
+                model=OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.7,
+                response_format=AIResponse
+            )
+        except Exception as e:
+            if hasattr(e, 'code') and e.code == 429:
+                delay = (2 ** retries) + random.uniform(0.1, 0.5)
+                logger.log("openai_429_retry", level="warning", data={
+                    "retry": retries,
+                    "sleep_time": round(delay, 2),
+                    "message": "🚦 429 rate limit hit, retrying..."
+                })
+                time.sleep(delay)
+                retries += 1
+            else:
+                raise e
+
+    raise RuntimeError("Exceeded maximum retries for OpenAI call")
 
 
 def calculate_costs(input_tokens, output_tokens, model=OPENAI_MODEL):
@@ -151,6 +170,7 @@ def enrich_product(barcode, task_id=None, stats=None):
         if stats:
             stats["failed"] += 1
 
+
 def enrich_products(limit=None, barcodes=None, brand=None):
     task_id = logger.log_task_start("enrich_products_ai")
     start_time = time.time()
@@ -202,6 +222,7 @@ def enrich_products(limit=None, barcodes=None, brand=None):
     logger.log("ai_enrichment_cost_summary", level="info", task_id=task_id, data={
         "total_cost": round(stats["total_cost"], 4)
     })
+
 
 if __name__ == "__main__":
     import argparse

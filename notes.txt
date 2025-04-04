@@ -35,6 +35,14 @@ python -m core.tasks.create_products_on_shopify create_products_on_shopify --bar
 # Run real post for one shop and one barcode
 python -m core.tasks.create_products_on_shopify create_products_on_shopify --shop supplementsteststore.myshopify.com --barcode 850001610292
 
+python -m core.tasks.update_supplier_data update_supplier_data
+python -m core.tasks.update_supplier_data update_supplier_data --limit 10
+python -m core.tasks.update_supplier_data update_supplier_data --dry-run
+python -m core.tasks.update_supplier_data update_supplier_data --dry-run --limit 10
+
+python -m core.tasks.update_products_on_shopify update_products_on_shopify --dry-run
+python -m core.tasks.update_products_on_shopify update_products_on_shopify
+
 python -m scripts.test_generate_listing --barcode 810028292598 --shop supplementsteststore.myshopify.com
 python -m scripts.test_create_shopify_product --barcode 850001610292 --shop supplementsteststore.myshopify.com
 python -m scripts.test_create_shopify_product --barcode 857640006172 --shop supplementsteststore.myshopify.com

@@ -16,16 +16,36 @@ class DummySupplier(Supplier):
         """
         # Dummy data (mimicking supplier feed)
         self._products = [
-            # {
-            #     "ean": "810028292598",
-            #     "name": "Dummy Product 1",
-            #     "stock_count": 100,
-            #     "price": 25.00,
-            #     "product_code": "XYZ123",
-            #     "brand": "Ghost",
-            #     "weight": "900g",
-            #     "other_data": "something"
-            # },
+            {
+                "ean": "857640006172",
+                "name": "Ghost Whey Protein 924g Milk Chocolate",
+                "stock_count": 10,
+                "price": 140,
+                "product_code": "GH000lll8",
+                "brand": "Ghost",
+                "weight": "924g",
+                "other_data": "something"
+            },
+            {
+                "ean": "850001610292",
+                "name": "Ghost Amino v2 404g Blue Raspberry",
+                "stock_count": 0,
+                "price": 10.00,
+                "product_code": "GH00",
+                "brand": "Ghost",
+                "weight": "404g",
+                "other_data": "something"
+            },
+            {
+                "ean": "810128527729",
+                "name": "Ghost Legend V4  660g Orange Cream",
+                "stock_count": 10,
+                "price": 5.00,
+                "product_code": "GH0047",
+                "brand": "Ghost",
+                "weight": "660g",
+                "other_data": "something"
+            },
             # {
             #     "ean": "857640006424",
             #     "name": "Dummy Product 1",

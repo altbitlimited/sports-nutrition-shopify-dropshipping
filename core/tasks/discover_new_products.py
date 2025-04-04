@@ -2,7 +2,7 @@ import sys
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from suppliers.dummy_supplier import DummySupplier  # Replace with real supplier imports later
+from suppliers.dummy_supplier import DummySupplier
 from suppliers.tropicana_wholesale_supplier import TropicanaWholesaleSupplier
 from core.MongoManager import MongoManager
 from core.products import Products
@@ -34,7 +34,8 @@ def process_barcodes_for_supplier(
     products,
     task_id=None,
     batch_size=500,
-    max_new_products=None
+    max_new_products=None,
+    max_workers=4
 ):
     new_barcodes = []
     new_supplier_links = []
@@ -43,7 +44,7 @@ def process_barcodes_for_supplier(
     for i in range(0, len(supplier_barcodes), batch_size):
         batch = supplier_barcodes[i:i + batch_size]
 
-        with ThreadPoolExecutor() as executor:
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_barcode = {
                 executor.submit(fetch_product_data, barcode, supplier, task_id=task_id): barcode
                 for barcode in batch
@@ -82,6 +83,19 @@ def process_barcodes_for_supplier(
                             supplier_parsed_data=supplier_data["parsed"]
                         )
                         new_supplier_links.append(barcode)
+
+                        # 🟡 Set shops with status "created" or "updated" to "update_pending"
+                        mongo.db.products.update_one(
+                            {
+                                "barcode": barcode,
+                                "shops.status": {"$in": ["created", "updated"]}
+                            },
+                            {
+                                "$set": {"shops.$[elem].status": "update_pending"}
+                            },
+                            array_filters=[{"elem.status": {"$in": ["created", "updated"]}}]
+                        )
+
                         logger.log(
                             event="supplier_added_to_product",
                             store=None,
@@ -122,8 +136,8 @@ def discover_new_products(batch_size=500, limit_per_supplier=None, brand_filters
 
     start_time = time.time()
     supplier_classes = [
-        # DummySupplier(),
-        TropicanaWholesaleSupplier()
+        DummySupplier(),
+        # TropicanaWholesaleSupplier()
     ]
     discovery_summary = {}
     products = Products()
@@ -141,10 +155,16 @@ def discover_new_products(batch_size=500, limit_per_supplier=None, brand_filters
         try:
             supplier_barcodes = supplier.get_all_barcodes()
             if brand_filters:
-                supplier_barcodes = [
-                    b for b in supplier_barcodes
-                    if supplier.get_product_by_barcode(b)['parsed']['brand'].strip().lower() in [brand.lower() for brand in brand_filters]
-                ]
+                filtered = []
+                for b in supplier_barcodes:
+                    try:
+                        data = supplier.get_product_by_barcode(b)
+                        brand = data['parsed']['brand'].strip().lower()
+                        if brand in [brand.lower() for brand in brand_filters]:
+                            filtered.append(b)
+                    except Exception as e:
+                        logger.log_product_error(barcode=b, error=f"Brand filter error: {str(e)}", task_id=task_id)
+                supplier_barcodes = filtered
             if limit_per_supplier:
                 supplier_barcodes = supplier_barcodes[:limit_per_supplier]
             supplier_barcodes = set(supplier_barcodes)
@@ -218,6 +238,7 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of products per supplier")
     parser.add_argument("--brands", nargs="*", help="Filter by brand names (space-separated)")
     parser.add_argument("--max-new-products", type=int, help="Limit the number of new products added per supplier")
+    parser.add_argument("--workers", type=int, default=4, help="Max number of threads for batch processing")
 
     args = parser.parse_args()
 

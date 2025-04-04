@@ -259,6 +259,7 @@ class Product:
                             "supplier": best["supplier_name"],
                             "price": best["price"],
                             "stock_level": best["stock_level"],
+                            "sku": best["sku"],
                             "message": "⚠️ Falling back to zero stock supplier for best price."
                         }
                     )
@@ -378,6 +379,7 @@ class Product:
             "rounding_used": None,
             "round_to": None,
             "selling_price": None,
+            "sku": None,
             "shopify_id": None,
             "shopify_gid": None,
             "shopify_url": None,
@@ -395,7 +397,19 @@ class Product:
             "created": {
                 "required": [
                     "shopify_id", "shopify_gid", "shopify_variant_id", "shopify_url", "shopify_handle",
-                    "supplier", "cost", "stock_level", "selling_price",
+                    "supplier", "cost", "stock_level", "selling_price", "sku",
+                    "margin_used", "rounding_used", "round_to"
+                ],
+                "defaults": {},
+                "reset_error_count": True
+            },
+            "update_pending": {"required": [], "defaults": {}},
+            "update_processing": {"required": [], "defaults": {}},
+            "update_error": {"required": [], "defaults": {}, "increment_error_count": True},
+            "update_fail": {"required": [], "defaults": {}},
+            "updated": {
+                "required": [
+                    "supplier", "cost", "stock_level", "selling_price", "sku",
                     "margin_used", "rounding_used", "round_to"
                 ],
                 "defaults": {},
@@ -604,7 +618,7 @@ class Product:
 
         payload = {
             "productId": product_id,
-            "sku": lookup.get("mpn", ""),
+            "sku": best_supplier['sku'],
             "barcode": self.barcode,
             "price": str(round(selling_price, 2)),
             "inventoryItem": {
@@ -658,6 +672,7 @@ class Product:
                 "cost": best_supplier["price"],
                 "stock_level": best_supplier.get("stock_level", 0),
                 "selling_price": selling_price,
+                "sku": best_supplier["sku"],
                 "margin_used": shop.get_setting("profit_margin", 1.5),
                 "rounding_used": shop.get_setting("rounding", 0.99),
                 "round_to": shop.get_setting("round_to", "closest")
@@ -697,6 +712,70 @@ class Product:
 
             raise
 
+    def update_on_shopify(self, shop: Shop, task_id: str = None):
+        self.log_action("shopify_update_flow_started", "info", {
+            "shop": shop.domain,
+            "message": "🔄 Starting Shopify product update flow."
+        }, task_id=task_id)
+
+        # Failsafe: mark as processing
+        self.mark_listed_to_shop(shop, {
+            "status": "update_processing"
+        })
+
+        try:
+            # Validate existing listing
+            existing = next((s for s in self.product.get("shops", []) if s.get("shop") == shop.domain), None)
+            if not existing or not existing.get("shopify_gid") or not existing.get("shopify_variant_id"):
+                raise Exception("❌ Cannot update — Shopify IDs missing from shop entry.")
+
+            product_gid = existing["shopify_gid"]
+            variant_gid = existing["shopify_variant_id"]
+
+            # Update price + SKU
+            self.update_shopify_variant(shop, product_gid, variant_gid, task_id)
+
+            # Update stock level
+            self.set_shopify_inventory(shop, variant_gid, task_id)
+
+            # Update internal record
+            best_supplier = self.get_best_supplier_for_shop(shop)
+            selling_price = self.get_selling_price_for_shop(shop)
+
+            self.mark_listed_to_shop(shop, {
+                "status": "updated",
+                "supplier": best_supplier["supplier_name"],
+                "cost": best_supplier["price"],
+                "stock_level": best_supplier.get("stock_level", 0),
+                "selling_price": selling_price,
+                "sku": best_supplier["sku"],
+                "margin_used": shop.get_setting("profit_margin", 1.5),
+                "rounding_used": shop.get_setting("rounding", 0.99),
+                "round_to": shop.get_setting("round_to", "closest")
+            })
+
+            self.log_action("shopify_update_flow_completed", "success", {
+                "shop": shop.domain,
+                "product_gid": product_gid,
+                "variant_gid": variant_gid,
+                "message": "✅ Shopify listing successfully updated."
+            }, task_id=task_id)
+
+            return True
+
+        except Exception as e:
+            self.mark_listed_to_shop(shop, {
+                "status": "update_error"  # We'll retry later
+            })
+
+            self.log_action("shopify_update_flow_failed", "error", {
+                "shop": shop.domain,
+                "error": str(e),
+                "message": "❌ Shopify update flow failed — marked as update_error for retry."
+            }, task_id=task_id)
+
+            raise
+
     def create_base_product_on_shopify(self, shop: Shop, task_id=None):
         payload = self.generate_shopify_payload(shop)
         if not payload:
@@ -725,7 +804,7 @@ class Product:
     def update_shopify_variant(self, shop: Shop, product_gid: str, variant_gid: str, task_id=None):
         best_supplier = self.get_best_supplier_for_shop(shop)
         selling_price = self.get_selling_price_for_shop(shop)
-        sku = self.product.get("barcode_lookup_data", {}).get("mpn", "")
+        sku = best_supplier['sku']
 
         shop.client.update_variant_bulk(product_gid, {
             "id": variant_gid,
@@ -839,6 +918,112 @@ class Product:
                         "message": "❌ Failed to create collection.",
                         "error": str(e)
                     }, task_id=task_id)
+
+    def update_supplier_parsed_data(self, supplier_name: str, parsed_updates: dict):
+        """
+        Updates parsed supplier data for a given supplier in the product.
+        """
+        updated = False
+
+        for supplier in self.product.get("suppliers", []):
+            if supplier["name"] == supplier_name:
+                supplier["parsed"].update(parsed_updates)
+                updated = True
+                break
+
+        if updated:
+            mongo.db.products.update_one(
+                {"barcode": self.barcode},
+                {
+                    "$set": {
+                        "suppliers": self.product["suppliers"],
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            self.log_action(
+                "supplier_parsed_updated",
+                "info",
+                {
+                    "supplier": supplier_name,
+                    "updates": parsed_updates,
+                    "message": f"✅ Updated parsed data for supplier {supplier_name}"
+                }
+            )
+        else:
+            self.log_action(
+                "supplier_parsed_update_failed",
+                "warning",
+                {
+                    "supplier": supplier_name,
+                    "message": f"⚠️ Could not find supplier {supplier_name} to update parsed data"
+                }
+            )
+
+    def update_supplier_entry(self, supplier_name: str, new_data: dict, new_parsed: dict,
+                              dry_run: bool = False) -> dict:
+        """
+        Compares and updates supplier's raw `data` and `parsed` fields.
+        Returns a dictionary summarizing what changed.
+        """
+        changed_fields = {"parsed": {}, "data": {}}
+        updated = False
+
+        for supplier in self.product.get("suppliers", []):
+            if supplier["name"] != supplier_name:
+                continue
+
+            # Check and compare parsed fields
+            for key, new_value in new_parsed.items():
+                old_value = supplier.get("parsed", {}).get(key)
+                if old_value != new_value:
+                    changed_fields["parsed"][key] = {"old": old_value, "new": new_value}
+                    if not dry_run:
+                        supplier["parsed"][key] = new_value
+                        updated = True
+
+            # Check and compare raw data fields (if any)
+            for key, new_value in new_data.items():
+                old_value = supplier.get("data", {}).get(key)
+                if old_value != new_value:
+                    changed_fields["data"][key] = {"old": old_value, "new": new_value}
+                    if not dry_run:
+                        supplier["data"][key] = new_value
+                        updated = True
+
+            break
+
+        if updated:
+            mongo.db.products.update_one(
+                {"barcode": self.barcode},
+                {
+                    "$set": {
+                        "suppliers": self.product["suppliers"],
+                        "updated_at": datetime.utcnow()
+                    }
+                }
+            )
+            self.log_action(
+                event="supplier_entry_updated",
+                level="info",
+                data={
+                    "supplier": supplier_name,
+                    "message": "🔁 Supplier entry updated",
+                    "changed_fields": changed_fields
+                }
+            )
+        elif changed_fields["parsed"] or changed_fields["data"]:
+            self.log_action(
+                event="supplier_entry_dry_run_detected_changes",
+                level="info",
+                data={
+                    "supplier": supplier_name,
+                    "message": "💡 Would update supplier entry (dry-run)",
+                    "changed_fields": changed_fields
+                }
+            )
+
+        return changed_fields
 
     def log_action(self, event: str, level: str = "info", data: dict = None, task_id: str = None):
         logger.log(

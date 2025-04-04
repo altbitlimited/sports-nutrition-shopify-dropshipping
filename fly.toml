@@ -38,3 +38,11 @@
   name = "flag_products_to_create"
   schedule = "0 6 * * *"
   command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"
+[[cron]]
+  name = "create_products_on_shopify"
+  schedule = "0 6 * * *"
+  command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"
+[[cron]]
+  name = "update_supplier_data"
+  schedule = "0 6 * * *"
+  command = "python3 core/tasks/update_supplier_data.py update_supplier_data"

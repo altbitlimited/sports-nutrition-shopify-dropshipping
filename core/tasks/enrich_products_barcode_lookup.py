@@ -61,6 +61,7 @@ def fetch_product_data_from_barcodelookup(barcode, retries=MAX_RETRIES, delay=IN
             })
 
             with rate_limit_lock:
+                time.sleep(REQUEST_INTERVAL)
                 response = requests.get(BARCODELOOKUP_API_URL, params={
                     'barcode': barcode,
                     'key': BARCODELOOKUP_API_KEY
@@ -157,7 +158,7 @@ def enrich_products(batch_size=500):
         "cache_hits": 0
     }
 
-    with ThreadPoolExecutor() as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
             executor.submit(enrich_product, barcode, stats, task_id): barcode
             for barcode in barcodes_to_enrich[:batch_size]

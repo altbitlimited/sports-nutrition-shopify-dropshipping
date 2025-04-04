@@ -296,3 +296,85 @@ class Products:
         )
 
         return eligible_pairs
+
+    def get_products_marked_for_update(self) -> list[tuple[Product, Shop]]:
+        """
+        Finds all product-shop pairs where shop status is:
+        - 'update_pending' (always eligible)
+        - 'update_error' with shorter exponential backoff
+
+        Uses shorter backoff: 30 * 2^(n-1) minutes
+        Allows up to MAX_FAIL_COUNT * 3 retries
+        """
+        now = datetime.utcnow()
+        max_retries = MAX_FAIL_COUNT * 3
+
+        pipeline = [
+            {"$unwind": "$shops"},
+            {"$match": {
+                "shops.status": {"$in": ["update_pending", "update_error"]},
+                "shops.error_count": {"$lt": max_retries}
+            }},
+            {"$addFields": {
+                "shop_status": "$shops.status",
+                "shop_error_count": "$shops.error_count",
+                "shop_updated_at": "$shops.updated_at",
+                "shop_domain": "$shops.shop",
+                "barcode": "$barcode"
+            }},
+            {"$project": {
+                "_id": 0,
+                "barcode": 1,
+                "shop_domain": 1,
+                "shop_status": 1,
+                "shop_error_count": 1,
+                "shop_updated_at": 1
+            }}
+        ]
+
+        raw_entries = list(self.collection.aggregate(pipeline))
+        eligible_pairs = []
+
+        for entry in raw_entries:
+            status = entry["shop_status"]
+            error_count = entry["shop_error_count"]
+            updated_at = entry.get("shop_updated_at")
+
+            if status == "update_pending":
+                pass  # always eligible
+            elif status == "update_error":
+                if not updated_at:
+                    continue
+
+                wait_minutes = 30 * (2 ** (error_count - 1))
+                retry_time = updated_at + timedelta(minutes=wait_minutes)
+
+                if retry_time > now:
+                    continue  # still backing off
+
+            try:
+                product = Product(entry["barcode"])
+                shop = Shop(entry["shop_domain"])
+                eligible_pairs.append((product, shop))
+            except Exception as e:
+                self.log_action(
+                    event="product_shop_update_load_failed",
+                    level="warning",
+                    data={
+                        "barcode": entry["barcode"],
+                        "shop_domain": entry["shop_domain"],
+                        "error": str(e),
+                        "message": "⚠️ Failed to load Product or Shop object for update."
+                    }
+                )
+
+        self.log_action(
+            event="products_ready_for_update_pipeline",
+            level="info",
+            data={
+                "count": len(eligible_pairs),
+                "message": f"🔁 Found {len(eligible_pairs)} Product-Shop pairs eligible for update."
+            }
+        )
+
+        return eligible_pairs
