@@ -14,3 +14,22 @@ query getCollections($first: Int!) {
   }
 }
 """
+
+GET_COLLECTIONS_QUERY_PAGINATED = """
+query getCollections($first: Int!, $after: String) {
+  collections(first: $first, after: $after) {
+    edges {
+      node {
+        id
+        legacyResourceId
+        title
+        handle
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+"""

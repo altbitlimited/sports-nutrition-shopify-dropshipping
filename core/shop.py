@@ -5,6 +5,7 @@ from core.encryption import encrypt_token, decrypt_token
 from core.Logger import AppLogger
 from datetime import datetime
 import difflib
+import re
 from core.exceptions import ShopNotReadyError
 
 class Shop:
@@ -27,6 +28,20 @@ class Shop:
             raise ValueError(f"Shop '{domain}' does not exist. Use Shops.add_new_shop() to create it.")
 
         self.shop["settings"] = self.shop.get("settings", self.DEFAULT_SETTINGS.copy())
+
+    @staticmethod
+    def normalize_collection_key(value: str) -> str:
+        """
+        Normalize a collection title or handle:
+        - Trim whitespace
+        - Lowercase
+        - Replace spaces with underscores
+        - Remove all punctuation
+        """
+        if not isinstance(value, str):
+            return ""
+        value = value.strip().lower().replace(" ", "_")
+        return re.sub(r"[^\w]", "", value)
 
     def get_access_token(self):
         token = self.shop.get("access_token")
@@ -379,7 +394,9 @@ class Shop:
                         "id": str(c["id"]),
                         "gid": c["gid"],
                         "title": c["title"],
-                        "handle": c["handle"]
+                        "handle": c["handle"],
+                        "normalized_title": self.normalize_collection_key(c["title"]),
+                        "normalized_handle": self.normalize_collection_key(c["handle"]),
                     })
                 else:
                     self.log_action(
@@ -413,137 +430,198 @@ class Shop:
             )
             raise
 
-    def get_collection_id_by_title(self, title: str) -> str | None:
+    def resolve_collection_id(
+            self,
+            *,
+            handle: str = None,
+            title: str = None,
+            return_type: str = "gid"  # 'gid', 'id', or 'both'
+    ) -> str | dict | None:
         """
-        Returns the collection ID for an exact or close fuzzy match of the title.
-        Logs if a fuzzy match was used.
+        Resolves a collection ID by exact match on normalized handle or title.
+
+        `return_type` can be:
+          - 'gid': returns the GraphQL global ID (default)
+          - 'id': returns the numeric Shopify ID
+          - 'both': returns {'gid': ..., 'id': ...}
         """
+        assert return_type in ("gid", "id", "both"), f"Invalid return_type '{return_type}'."
+
         collections = self.shop.get("collections", [])
-        titles = [c.get("title", "").strip() for c in collections]
+        self.log_action("resolve_collection_id_collections_check", "debug", {
+            "shop_collections": collections,
+        })
 
-        # Exact match first
-        for collection in collections:
-            if collection.get("title", "").strip().lower() == title.strip().lower():
-                return collection.get("id")
+        normalized_input_handle = self.normalize_collection_key(handle) if handle else None
+        normalized_input_title = self.normalize_collection_key(title) if title else None
 
-        # Fuzzy match fallback
-        closest = difflib.get_close_matches(title.strip(), titles, n=1, cutoff=0.6)
-        if closest:
-            match_title = closest[0]
-            for collection in collections:
-                if collection.get("title") == match_title:
-                    self.log_action(
-                        event="collection_fuzzy_match_used",
-                        level="info",
-                        data={
-                            "input": title,
-                            "matched": match_title,
-                            "collection_id": collection.get("id"),
-                            "message": "🧠 Fuzzy match used to resolve collection title."
-                        }
-                    )
-                    return collection.get("id")
+        def extract(c):
+            if return_type == "both":
+                return {"gid": c.get("gid"), "id": c.get("id")}
+            return c.get(return_type)
 
-        self.log_action(
-            event="collection_match_not_found",
-            level="debug",
-            data={
-                "input": title,
-                "message": "❌ No collection found with exact or fuzzy match."
-            }
-        )
+        for c in collections:
+            normalized_title = c.get("normalized_title") or self.normalize_collection_key(c.get("title", ""))
+            normalized_handle = c.get("normalized_handle") or self.normalize_collection_key(c.get("handle", ""))
 
-        return None
+            if normalized_input_handle and normalized_input_handle == normalized_handle:
+                return extract(c)
 
-    def get_collection_id_by_handle(self, handle: str) -> str | None:
-        """
-        Returns the collection ID for an exact or close fuzzy match of the handle.
-        Logs if a fuzzy match was used.
-        """
-        collections = self.shop.get("collections", [])
-        handles = [c.get("handle", "").strip() for c in collections]
+            if normalized_input_title and normalized_input_title == normalized_title:
+                return extract(c)
 
-        # Exact match first
-        for collection in collections:
-            if collection.get("handle", "").strip().lower() == handle.strip().lower():
-                return collection.get("id")
-
-        # Fuzzy match fallback
-        import difflib
-        closest = difflib.get_close_matches(handle.strip(), handles, n=1, cutoff=0.6)
-        if closest:
-            match_handle = closest[0]
-            for collection in collections:
-                if collection.get("handle") == match_handle:
-                    self.log_action(
-                        event="collection_fuzzy_match_used",
-                        level="info",
-                        data={
-                            "input": handle,
-                            "matched": match_handle,
-                            "collection_id": collection.get("id"),
-                            "message": "🧠 Fuzzy match used to resolve collection handle."
-                        }
-                    )
-                    return collection.get("id")
-
-        self.log_action(
-            event="collection_match_not_found",
-            level="debug",
-            data={
-                "input": handle,
-                "message": "❌ No collection found with exact or fuzzy match."
-            }
-        )
-
-        return None
-
-    def resolve_collection_id(self, *, handle: str = None, title: str = None) -> str | None:
-        """
-        Attempts to resolve a collection GID by handle or title.
-        Prioritizes exact match, then falls back to fuzzy matching.
-        Logs what strategy was used.
-        """
-        collections = self.shop.get("collections", [])
-
-        if handle:
-            for c in collections:
-                if c.get("handle", "").strip().lower() == handle.strip().lower():
-                    return c.get("gid")
-
-            from difflib import get_close_matches
-            all_handles = [c.get("handle", "") for c in collections]
-            match = get_close_matches(handle.strip(), all_handles, n=1, cutoff=0.6)
-            if match:
-                matched = match[0]
-                for c in collections:
-                    if c.get("handle") == matched:
-                        self.log_action("collection_fuzzy_match_used", "info", {
-                            "input": handle, "matched": matched, "type": "handle", "collection_gid": c.get("gid")
-                        })
-                        return c.get("gid")
-
-        if title:
-            for c in collections:
-                if c.get("title", "").strip().lower() == title.strip().lower():
-                    return c.get("gid")
-
-            from difflib import get_close_matches
-            all_titles = [c.get("title", "") for c in collections]
-            match = get_close_matches(title.strip(), all_titles, n=1, cutoff=0.6)
-            if match:
-                matched = match[0]
-                for c in collections:
-                    if c.get("title") == matched:
-                        self.log_action("collection_fuzzy_match_used", "info", {
-                            "input": title, "matched": matched, "type": "title", "collection_gid": c.get("gid")
-                        })
-                        return c.get("gid")
+        self.log_action("collection_exact_match_failed", "debug", {
+            "handle": handle,
+            "title": title,
+            "normalized_handle": normalized_input_handle,
+            "normalized_title": normalized_input_title,
+            "collection_titles": [c.get("title") for c in collections],
+            "collection_handles": [c.get("handle") for c in collections],
+        })
 
         self.log_action("collection_match_not_found", "debug", {
-            "handle": handle, "title": title, "message": "❌ No collection found via fuzzy or exact match."
+            "handle": handle,
+            "title": title,
+            "message": "❌ No collection found via exact match."
         })
+
         return None
+
+    # Old resolve_collection_id with fuzzy matching that was causing issues
+    # def resolve_collection_id(
+    #         self,
+    #         *,
+    #         handle: str = None,
+    #         title: str = None,
+    #         return_type: str = "gid"  # 'gid', 'id', or 'both'
+    # ) -> str | dict | None:
+    #     """
+    #     Attempts to resolve a collection ID by handle or title.
+    #     Prioritizes exact match, then fuzzy match.
+    #
+    #     `return_type` can be:
+    #       - 'gid': returns the GraphQL global ID (default)
+    #       - 'id': returns the numeric Shopify ID
+    #       - 'both': returns {'gid': ..., 'id': ...}
+    #     """
+    #     assert return_type in ("gid", "id", "both"), f"Invalid return_type '{return_type}'."
+    #
+    #     collections = self.shop.get("collections", [])
+    #
+    #     # Normalize input
+    #     input_title = title.strip().lower() if title else None
+    #     input_handle = handle.strip().lower() if handle else None
+    #
+    #     def extract(c):
+    #         if return_type == "both":
+    #             return {"gid": c.get("gid"), "id": c.get("id")}
+    #         return c.get(return_type)
+    #
+    #     def log_fuzzy(input_val, matched_val, match_type, c):
+    #         payload = {
+    #             "input": input_val,
+    #             "matched": matched_val,
+    #             "type": match_type,
+    #         }
+    #         if return_type == "both":
+    #             payload.update({"collection_gid": c.get("gid"), "collection_id": c.get("id")})
+    #         else:
+    #             payload[f"collection_{return_type}"] = c.get(return_type)
+    #         self.log_action("collection_fuzzy_match_used", "info", payload)
+    #
+    #     # ✅ Exact match
+    #     for c in collections:
+    #         c_title = c.get("title", "").strip().lower()
+    #         c_handle = c.get("handle", "").strip().lower()
+    #
+    #         if input_handle and c_handle == input_handle:
+    #             return extract(c)
+    #
+    #         if input_title and c_title == input_title:
+    #             return extract(c)
+    #
+    #     # 🐞 Log missed exact match
+    #     self.log_action("collection_exact_match_failed", "debug", {
+    #         "handle": handle,
+    #         "title": title,
+    #         "normalized_handle": input_handle,
+    #         "normalized_title": input_title,
+    #         "collection_titles": [c.get("title") for c in collections],
+    #         "collection_handles": [c.get("handle") for c in collections],
+    #     })
+    #
+    #     # 🤏 Fuzzy fallback
+    #     from difflib import get_close_matches
+    #
+    #     if handle:
+    #         handles = [c.get("handle", "") for c in collections]
+    #         match = get_close_matches(handle.strip(), handles, n=1, cutoff=0.85)
+    #         if match:
+    #             matched = match[0]
+    #             for c in collections:
+    #                 if c.get("handle") == matched:
+    #                     log_fuzzy(handle, matched, "handle", c)
+    #                     return extract(c)
+    #
+    #     if title:
+    #         titles = [c.get("title", "") for c in collections]
+    #         match = get_close_matches(title.strip(), titles, n=1, cutoff=0.85)
+    #         if match:
+    #             matched = match[0]
+    #             for c in collections:
+    #                 if c.get("title") == matched:
+    #                     log_fuzzy(title, matched, "title", c)
+    #                     return extract(c)
+    #
+    #     # ❌ Total failure
+    #     self.log_action("collection_match_not_found", "debug", {
+    #         "handle": handle, "title": title, "message": "❌ No collection found via fuzzy or exact match."
+    #     })
+    #     return None
+
+    def ensure_collections_exist_from_products(self, products: list, task_id: str = None) -> list[str]:
+        seen_titles = set()
+        created_titles = []
+
+        self.log_action("ensure_collections_exist_from_products_before_loop", "debug", {
+            "collections_in_shop": self.shop.get("collections", [])
+        })
+
+        for product in products:
+            ai = product.product.get("ai_generated_data", {})
+            if not ai:
+                continue
+
+            titles = list(filter(None, [ai.get("primary_collection")] + ai.get("secondary_collections", [])))
+
+            for title in titles:
+                normalized = title.strip().lower()
+                if normalized in seen_titles:
+                    continue
+                seen_titles.add(normalized)
+
+                if self.resolve_collection_id(title=title):
+                    continue  # already exists
+
+                try:
+                    created = self.client.create_collection(title=title, task_id=task_id)
+                    self.add_local_collection(created)
+                    created_titles.append(title)
+                    self.log_action("collection_created_bulk", "info", {
+                        "title": title,
+                        "collection_id": created.get("id"),
+                        "collection_gid": created.get("gid"),
+                        "message": "✅ Collection created during preflight batch step."
+                    }, task_id=task_id)
+
+                except Exception as e:
+                    self.log_action("collection_create_failed", "error", {
+                        "title": title,
+                        "error": str(e),
+                        "message": "❌ Failed to create collection during preflight."
+                    }, task_id=task_id)
+
+        return created_titles
 
     def add_product_to_collection(
             self,
@@ -557,7 +635,14 @@ class Shop:
         Resolves a collection by handle or title and adds a single product ID to it.
         Returns True if successful, False otherwise.
         """
-        collection_id = self.resolve_collection_id(handle=handle, title=title)
+        collection_id = self.resolve_collection_id(handle=handle, title=title, return_type="both")
+
+        # self.log_action("collection_debug_check_before_add", "debug", {
+        #     "handle": handle,
+        #     "title": title,
+        #     "resolved_collection": collection_id,
+        #     "collections_in_shop": self.shop.get("collections", [])
+        # })
 
         if not collection_id:
             self.log_action(
@@ -576,8 +661,7 @@ class Shop:
 
         try:
             self.client.add_product_to_collection(
-                collection_id=collection_id,
-                product_ids=[product_id],
+                collection_id=collection_id["gid"],
                 product_gids=[product_gid],
                 task_id=task_id
             )
@@ -601,13 +685,13 @@ class Shop:
             return False
 
     def add_local_collection(self, collection: dict):
-        """
-        Adds a collection to the shop's local memory and database, if not already present.
-        Expects a dict with keys: id, title, handle.
-        """
         existing = self.shop.get("collections", [])
         if any(str(c["id"]) == str(collection["id"]) for c in existing):
             return False  # Already exists
+
+        # ✅ Normalize handle/title on insert
+        collection["normalized_title"] = self.normalize_collection_key(collection.get("title", ""))
+        collection["normalized_handle"] = self.normalize_collection_key(collection.get("handle", ""))
 
         self.shop.setdefault("collections", []).append(collection)
         self.collection.update_one(

@@ -15,7 +15,8 @@ from core.shopify_graphql.mutations import (
     COLLECTION_ADD_PRODUCTS_MUTATION,
     COLLECTION_CREATE_MUTATION
 )
-from core.shopify_graphql.queries import GET_COLLECTIONS_QUERY
+from core.shopify_graphql.queries import GET_COLLECTIONS_QUERY, GET_COLLECTIONS_QUERY_PAGINATED
+
 import shopify
 
 class ShopifyGraphQLError(Exception):
@@ -279,35 +280,55 @@ class ShopifyClient:
         return result["productVariants"]
 
     def get_collections(self, first: int = 100, task_id=None) -> list[dict]:
-        variables = {"first": first}
-        data = self._post_graphql(GET_COLLECTIONS_QUERY, variables, task_id=task_id)
+        cursor = None
+        all_collections = []
+        has_next_page = True
+        page = 1
 
-        try:
-            edges = data["collections"]["edges"]
-            collections = [
-                {
-                    "id": edge["node"]["legacyResourceId"],  # REST ID
-                    "gid": edge["node"]["id"],  # GraphQL ID
-                    "title": edge["node"]["title"],
-                    "handle": edge["node"]["handle"]
-                }
-                for edge in edges
-            ]
-            self.shop.log_action(
-                event="✅ shopify_collections_fetched",
-                level="info",
-                data={"count": len(collections)},
-                task_id=task_id
-            )
-            return collections
-        except Exception as e:
-            self.shop.log_action(
-                event="❌ shopify_collections_fetch_failed",
-                level="error",
-                data={"error": str(e)},
-                task_id=task_id
-            )
-            raise
+        while has_next_page:
+            variables = {"first": first}
+            if cursor:
+                variables["after"] = cursor
+
+            try:
+                data = self._post_graphql(GET_COLLECTIONS_QUERY_PAGINATED, variables, task_id=task_id)
+
+                edges = data["collections"]["edges"]
+                page_collections = [
+                    {
+                        "id": edge["node"]["legacyResourceId"],  # REST ID
+                        "gid": edge["node"]["id"],  # GraphQL ID
+                        "title": edge["node"]["title"],
+                        "handle": edge["node"]["handle"]
+                    }
+                    for edge in edges
+                    if "node" in edge and "legacyResourceId" in edge["node"]
+                ]
+
+                all_collections.extend(page_collections)
+
+                # Log per page
+                self.shop.log_action(
+                    event="✅ shopify_collections_fetched",
+                    level="info",
+                    data={"count": len(page_collections), "page": page},
+                    task_id=task_id
+                )
+
+                page += 1
+                has_next_page = data["collections"]["pageInfo"]["hasNextPage"]
+                cursor = data["collections"]["pageInfo"]["endCursor"]
+
+            except Exception as e:
+                self.shop.log_action(
+                    event="❌ shopify_collections_fetch_failed",
+                    level="error",
+                    data={"error": str(e), "cursor": cursor},
+                    task_id=task_id
+                )
+                raise
+
+        return all_collections
 
     def get_install_url(self) -> str:
         shopify.Session.setup(api_key=SHOPIFY_API_KEY, secret=SHOPIFY_API_SECRET)
@@ -487,7 +508,7 @@ class ShopifyClient:
 
         return success
 
-    def add_product_to_collection(self, collection_id: str, product_ids: list[str], product_gids: list[str], task_id=None) -> dict:
+    def add_product_to_collection(self, collection_id: str, product_gids: list[str], task_id=None) -> dict:
         variables = {
             "id": collection_id,
             "productIds": product_gids

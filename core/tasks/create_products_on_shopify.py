@@ -4,6 +4,8 @@ import sys
 import time
 import argparse
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
+
 from core.products import Products
 from core.Logger import AppLogger
 from core.exceptions import ShopNotReadyError
@@ -11,7 +13,7 @@ from core.exceptions import ShopNotReadyError
 logger = AppLogger()
 
 
-def create_products_on_shopify(barcodes=None, shop_domains=None, limit=None, max_workers=4, dry_run=False):
+def create_products_on_shopify(barcodes=None, shop_domains=None, limit=None, max_workers=3, dry_run=False):
     task_id = logger.log_task_start("create_products_on_shopify", count=0)
     start_time = time.time()
 
@@ -66,6 +68,45 @@ def create_products_on_shopify(barcodes=None, shop_domains=None, limit=None, max
     if limit:
         ready_pairs = ready_pairs[:limit]
 
+    # 🔍 Group by shop for collection preflight
+    grouped = defaultdict(list)
+    for product, shop in ready_pairs:
+        grouped[shop.domain].append((product, shop))
+
+    for domain, product_shop_list in grouped.items():
+        shop = product_shop_list[0][1]
+        products = [ps[0] for ps in product_shop_list]
+
+        collection_titles = []
+        for product in products:
+            ai = product.product.get("ai_generated_data", {})
+            if not ai:
+                continue
+            titles = list(filter(None, [ai.get("primary_collection")] + ai.get("secondary_collections", [])))
+            collection_titles.extend(titles)
+
+        shop.log_action("preflight_collection_titles_gathered", "debug", {
+            "count": len(collection_titles),
+            "unique": len(set(collection_titles)),
+            "titles": list(set(collection_titles)),
+            "message": "📋 Gathered collection titles for preflight."
+        }, task_id=task_id)
+
+        created = shop.ensure_collections_exist_from_products(products, task_id=task_id)
+
+        if created:
+            shop.log_action("collections_created_preflight", "info", {
+                "count": len(created),
+                "created": created,
+                "message": "📚 New collections created before listing."
+            }, task_id=task_id)
+        else:
+            shop.log_action("collections_created_preflight", "info", {
+                "count": 0,
+                "message": "✅ No new collections needed before listing."
+            }, task_id=task_id)
+
+    # 🔁 Actual product creation or dry run
     success = 0
     failed = 0
     skipped = 0
@@ -114,6 +155,10 @@ def _process_product_creation(product, shop, task_id):
         "message": "🚀 Attempting to create product on Shopify."
     }, task_id=task_id)
 
+    shop.log_action("_process_product_creation_collection_check", "debug", {
+        "collections_in_shop": shop.shop.get("collections", [])
+    })
+
     try:
         product.create_on_shopify(shop, task_id=task_id)
         product.log_action("shopify_product_created", "success", {
@@ -137,7 +182,7 @@ if __name__ == "__main__":
     parser.add_argument("--barcode", action="append", help="Limit to specific barcode(s). Can be passed multiple times.")
     parser.add_argument("--shop", action="append", help="Limit to specific shop(s). Can be passed multiple times.")
     parser.add_argument("--limit", type=int, help="Maximum number of products to process.")
-    parser.add_argument("--workers", type=int, default=4, help="Thread pool max workers (default: 4)")
+    parser.add_argument("--workers", type=int, default=4, help="Thread pool max workers (default: 3)")
     parser.add_argument("--dry-run", action="store_true", help="Perform a dry run without creating products.")
 
     args = parser.parse_args()
