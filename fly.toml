@@ -46,3 +46,7 @@
   name = "update_supplier_data"
   schedule = "0 6 * * *"
   command = "python3 core/tasks/update_supplier_data.py update_supplier_data"
+[[cron]]
+  name = "update_products_on_shopify"
+  schedule = "0 6 * * *"
+  command = "python3 core/tasks/update_products_on_shopify.py update_products_on_shopify"
