@@ -1,5 +1,3 @@
-# core/tasks/discover_new_products.py
-
 import sys
 import time
 import random
@@ -30,7 +28,14 @@ def fetch_product_data(barcode, supplier, retries=3, delay=2, task_id=None):
             time.sleep(delay * (2 ** attempt) + random.uniform(0, 1))
     return None
 
-def process_barcodes_for_supplier(supplier, supplier_barcodes, products, task_id=None, batch_size=500):
+def process_barcodes_for_supplier(
+    supplier,
+    supplier_barcodes,
+    products,
+    task_id=None,
+    batch_size=500,
+    max_new_products=None
+):
     new_barcodes = []
     new_supplier_links = []
     supplier_barcodes = list(supplier_barcodes)
@@ -52,6 +57,9 @@ def process_barcodes_for_supplier(supplier, supplier_barcodes, products, task_id
 
                 product = mongo.db.products.find_one({"barcode": barcode})
                 if not product:
+                    if max_new_products and len(new_barcodes) >= max_new_products:
+                        return new_barcodes, new_supplier_links
+
                     new_barcodes.append(barcode)
                     supplier_data = {
                         "name": supplier.name,
@@ -109,7 +117,7 @@ def prune_supplier_links_for_supplier(supplier_name, all_barcodes, task_id=None)
             )
     return pruned_supplier_links
 
-def discover_new_products(batch_size=500, limit_per_supplier=None, brand_filters=None):
+def discover_new_products(batch_size=500, limit_per_supplier=None, brand_filters=None, max_new_products=None):
     task_id = logger.log_task_start(event="product_discovery")
 
     start_time = time.time()
@@ -149,7 +157,12 @@ def discover_new_products(batch_size=500, limit_per_supplier=None, brand_filters
             continue
 
         new_barcodes, new_supplier_links = process_barcodes_for_supplier(
-            supplier, supplier_barcodes, products, task_id=task_id, batch_size=batch_size
+            supplier,
+            supplier_barcodes,
+            products,
+            task_id=task_id,
+            batch_size=batch_size,
+            max_new_products=max_new_products
         )
 
         total_success += len(new_barcodes) + len(new_supplier_links)
@@ -204,10 +217,11 @@ if __name__ == "__main__":
     parser.add_argument("command", choices=["discover_new_products"], help="Command to run")
     parser.add_argument("--limit", type=int, default=None, help="Limit the number of products per supplier")
     parser.add_argument("--brands", nargs="*", help="Filter by brand names (space-separated)")
+    parser.add_argument("--max-new-products", type=int, help="Limit the number of new products added per supplier")
 
     args = parser.parse_args()
 
     if args.command == "discover_new_products":
-        discover_new_products(limit_per_supplier=args.limit, brand_filters=args.brands)
+        discover_new_products(limit_per_supplier=args.limit, brand_filters=args.brands, max_new_products=args.max_new_products)
     else:
         logger.log(event="invalid_command", level="warning", data={"message": "No valid command provided"})

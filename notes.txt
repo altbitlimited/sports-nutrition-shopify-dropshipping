@@ -13,6 +13,7 @@ python -m core.tasks.discover_new_products discover_new_products --limit 2
 python -m core.tasks.discover_new_products discover_new_products --brands "Ghost"
 python -m core.tasks.discover_new_products discover_new_products --brands "Ghost" "Optimum Nutrition"
 python -m core.tasks.discover_new_products discover_new_products --limit 3 --brands "Ghost"
+python -m core.tasks.discover_new_products discover_new_products --max-new-products 3 --brands "Ghost"
 
 python -m core.tasks.enrich_products_barcode_lookup enrich_products_barcode_lookup
 

@@ -791,7 +791,7 @@ class Product:
     def assign_product_collections(self, shop: Shop, product_id: str, product_gid: str, task_id: str = None):
         ai = self.product.get("ai_generated_data", {})
         primary = ai.get("primary_collection")
-        secondary = ai.get("secondary_collections", [])
+        secondary = ai.get("secondary_collections") or []
         collection_names = list(set(filter(None, [primary] + secondary)))
 
         for name in collection_names:

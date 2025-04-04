@@ -592,7 +592,7 @@ class Shop:
             if not ai:
                 continue
 
-            titles = list(filter(None, [ai.get("primary_collection")] + ai.get("secondary_collections", [])))
+            titles = list(filter(None, [ai.get("primary_collection")] + (ai.get("secondary_collections") or [])))
 
             for title in titles:
                 normalized = title.strip().lower()
