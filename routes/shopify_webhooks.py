@@ -125,6 +125,39 @@ async def handle_product_deleted(shop_domain: str, payload: dict):
         "message": "🛑 Product marked as unmanaged after Shopify deletion."
     })
 
+async def handle_customers_data_request(shop_domain: str, payload: dict):
+    shop = Shop(shop_domain)
+    shop.log_action(
+        event="privacy_customers_data_request",
+        level="info",
+        data={
+            "payload": payload,
+            "message": "📄 Received customers/data_request webhook."
+        }
+    )
+
+async def handle_customers_redact(shop_domain: str, payload: dict):
+    shop = Shop(shop_domain)
+    shop.log_action(
+        event="privacy_customers_redact",
+        level="info",
+        data={
+            "payload": payload,
+            "message": "🧽 Received customers/redact webhook."
+        }
+    )
+
+async def handle_shop_redact(shop_domain: str, payload: dict):
+    shop = Shop(shop_domain)
+    shop.log_action(
+        event="privacy_shop_redact",
+        level="info",
+        data={
+            "payload": payload,
+            "message": "🏪 Received shop/redact webhook."
+        }
+    )
+
 # --- Webhook Topic Registry ---
 
 WEBHOOK_HANDLERS = {
@@ -133,6 +166,10 @@ WEBHOOK_HANDLERS = {
     # "collections/update": handle_collection_updated,
     # "collections/delete": handle_collection_deleted,
     "products/delete": handle_product_deleted,
+    # These are registered in partner dashboard, not from client
+    "customers/data_request": handle_customers_data_request,
+    "customers/redact": handle_customers_redact,
+    "shop/redact": handle_shop_redact,
 }
 
 # --- Central Webhook Endpoint ---

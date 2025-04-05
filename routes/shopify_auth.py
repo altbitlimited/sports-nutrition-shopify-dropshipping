@@ -9,11 +9,14 @@ from core.config import SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_API_VERSION
 from core.clients.shopify_client import ShopifyClient
 from core.clients.shopify_client_lite import ShopifyClientLite
 from core.helpers.shopify_auth import exchange_token_and_scopes
+from fastapi.templating import Jinja2Templates
+from fastapi.responses import HTMLResponse
 
 router = APIRouter(prefix="/auth/shopify")
 logger = AppLogger()
 shops = Shops()
 
+templates = Jinja2Templates(directory="templates")
 
 @router.get("/install")
 def install(shop: str):
@@ -74,13 +77,16 @@ def callback(request: Request):
             }
         )
 
-        return {
+        return templates.TemplateResponse("installed.html", {
+            "request": request,
             "message": "App installed successfully.",
             "shop": shop_domain,
             "token_saved": True,
             "settings_initialized": True,
-            "webhook_registered": success
-        }
+            "webhook_registered": success,
+            "collections_updated": True,
+            "location_id_retrieved": True,
+        })
 
     except Exception as e:
         logger.log(
@@ -90,3 +96,16 @@ def callback(request: Request):
             data={"error": str(e)}
         )
         raise HTTPException(status_code=500, detail=f"OAuth flow failed: {str(e)}")
+
+@router.get("/callback_test", response_class=HTMLResponse)
+def callback(request: Request):
+    return templates.TemplateResponse("installed.html", {
+        "request": request,
+        "message": "App installed successfully.",
+        "shop": "example.myshopify.com",
+        "token_saved": True,
+        "settings_initialized": True,
+        "webhook_registered": True,
+        "collections_updated": True,
+        "location_id_retrieved": True,
+    })

@@ -12,7 +12,7 @@ python -m core.tasks.discover_new_products discover_new_products
 python -m core.tasks.discover_new_products discover_new_products --limit 2
 python -m core.tasks.discover_new_products discover_new_products --brands "Ghost"
 python -m core.tasks.discover_new_products discover_new_products --brands "Ghost" "Optimum Nutrition"
-python -m core.tasks.discover_new_products discover_new_products --limit 3 --brands "Ghost"
+python -m core.tasks.discover_new_products discover_new_products --limit 1 --brands "Ghost"
 python -m core.tasks.discover_new_products discover_new_products --max-new-products 33 --brands "Ghost"
 
 python -m core.tasks.enrich_products_barcode_lookup enrich_products_barcode_lookup
@@ -47,3 +47,5 @@ python -m scripts.test_generate_listing --barcode 810028292598 --shop supplement
 python -m scripts.test_create_shopify_product --barcode 850001610292 --shop supplementsteststore.myshopify.com
 python -m scripts.test_create_shopify_product --barcode 857640006172 --shop supplementsteststore.myshopify.com
 python -m scripts.test_update_shop_collections --shop supplementsteststore.myshopify.com
+python -m scripts.push_fly_secrets
+python -m scripts.register_webhooks_for_all

@@ -53,7 +53,7 @@ class ShopifyClient:
 
     @staticmethod
     def get_default_scopes() -> list[str]:
-        return ["read_products", "write_products", "read_locations", "write_inventory"]
+        return ["read_products", "write_products", "read_locations", "write_inventory", "read_customers"]
 
     @staticmethod
     def extract_legacy_id(gid: str) -> str:
@@ -369,7 +369,7 @@ class ShopifyClient:
             scopes = []
         return scopes
 
-    def register_webhooks(self, task_id=None) -> bool:
+    def register_webhooks(self, task_id=None, app_url_override=None) -> bool:
         """
         Registers essential Shopify webhooks for the app.
         - Validates APP_BASE_URL
@@ -378,6 +378,9 @@ class ShopifyClient:
         """
         import shopify
         from core.config import APP_BASE_URL
+
+        if app_url_override is not None:
+            APP_BASE_URL = app_url_override
 
         if not APP_BASE_URL or not isinstance(APP_BASE_URL, str):
             self.shop.log_action("webhook_config_error", "error", {
@@ -407,7 +410,13 @@ class ShopifyClient:
             # "collections/update",
             # "collections/delete",
             "products/delete",
+            # These are registered in partner dashboard, not from client
+            # "customers/data_request",
+            # "customers/redact",
+            # "shop/redact",
         ]
+
+        # print(f"Using API_VERSION: {SHOPIFY_API_VERSION}")
 
         success = True
         registered = []

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Welcome to Shredded Treat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Anton&family=Pacifico&family=Poppins:wght@400;600&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: 'Poppins', sans-serif;
+      background-color: #fff0d1;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      text-align: center;
+      color: #2c3e3e;
+      overflow-x: hidden;
+    }
+
+    img {
+      max-width: 300px;
+      margin-bottom: 30px;
+      animation: popIn 1s ease-out;
+    }
+
+    h1, h2, p {
+      opacity: 0;
+      animation: fadeIn 1s ease-out forwards;
+    }
+
+    h1 {
+      animation-delay: 0.2s;
+      font-family: 'Anton', sans-serif;
+      font-size: 2.5rem;
+      margin-bottom: 0.5rem;
+      color: #c1440e;
+    }
+
+    h2 {
+      animation-delay: 0.5s;
+      font-family: 'Pacifico', cursive;
+      font-size: 2rem;
+      margin-bottom: 1.5rem;
+      color: #8c3503;
+    }
+
+    p {
+      animation-delay: 0.8s;
+      max-width: 500px;
+      font-size: 1rem;
+      color: #333;
+      margin-bottom: 20px;
+    }
+
+    .details {
+      margin-top: 10px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      font-size: 1rem;
+      color: #444;
+    }
+
+    .detail-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      justify-content: center;
+      opacity: 0;
+      animation: fadeIn 0.7s ease-out forwards;
+    }
+
+    .detail-item:nth-child(1) { animation-delay: 1.1s; }
+    .detail-item:nth-child(2) { animation-delay: 1.3s; }
+    .detail-item:nth-child(3) { animation-delay: 1.5s; }
+    .detail-item:nth-child(4) { animation-delay: 1.7s; }
+    .detail-item:nth-child(5) { animation-delay: 1.9s; }
+
+    .detail-icon {
+      font-size: 1.3rem;
+    }
+
+    @keyframes popIn {
+      0% {
+        opacity: 0;
+        transform: scale(0.9);
+      }
+      100% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    @keyframes fadeIn {
+      to {
+        opacity: 1;
+      }
+    }
+
+    @media (max-width: 600px) {
+      h1 { font-size: 2rem; }
+      h2 { font-size: 1.5rem; }
+      p, .details { font-size: 0.9rem; }
+    }
+  </style>
+</head>
+<body>
+  <img src="{{ url_for('static', path='img/logo.png') }}" alt="Shredded Treat Logo">
+
+  <h1>You're All Set!</h1>
+  <h2>Welcome to Shredded Treat</h2>
+  <p>
+    Your store <strong>{{ shop }}</strong> has successfully installed the Shredded Treat app.
+  </p>
+
+  <div class="details">
+    <div class="detail-item">
+      <span class="detail-icon">🔐</span>
+      <span>Access token saved</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-icon">⚙️</span>
+      <span>Default settings initialized</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-icon">🔔</span>
+      <span>Webhooks registered</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-icon">🗂️</span>
+      <span>Collections updated</span>
+    </div>
+    <div class="detail-item">
+      <span class="detail-icon">📍</span>
+      <span>Primary location set</span>
+    </div>
+  </div>
+</body>
+</html>

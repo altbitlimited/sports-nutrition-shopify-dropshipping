@@ -1,0 +1,35 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.so
+*.egg
+*.egg-info/
+*.log
+
+# Env & config
+.env
+.env.production
+*.env
+
+# Dev tools
+.vscode/
+.idea/
+.venv/
+venv/
+
+# OS-specific
+.DS_Store
+Thumbs.db
+
+# Python test & coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.pytest_cache/
+.cache/
+
+# Git
+.git
+.gitignore

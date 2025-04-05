@@ -1,52 +1,69 @@
-[[services]]
-  internal_port = 8000  # The port your FastAPI app is running on
-  protocol = "http"
-  [services.concurrency]
-    soft_limit = 25
-    hard_limit = 40
-  [[services.ports]]
-    port = "80"
+app = 'shreddedtreat-app'
+primary_region = 'lhr'
 
-[deploy]
-  release_command = "python3 scripts/init_indexes.py"
+[build]
 
-[[cron]]
-  name = "prune_old_logs"
-  schedule = "0 0 * * *"  # Runs every day at midnight UTC
-  command = "python3 core/tasks/prune_old_logs.py prune_old_logs"
-[[cron]]
-  name = "discover_new_products"
-  schedule = "0 6 * * *"  # every day at 6:00 AM UTC
-  command = "python3 core/tasks/discover_new_products.py discover_new_products"
-[[cron]]
-  name = "enrich_products_barcode_lookup"
-  schedule = "0 7 * * *"  # Every day at 7:00 AM UTC
-  command = "python3 core/tasks/enrich_products_barcode_lookup.py enrich_products_barcode_lookup"
-[[cron]]
-  name = "enrich_products_images"
-  schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
-  command = "python3 core/tasks/enrich_products_images.py enrich_products_images"
-[[cron]]
-  name = "enrich_products_ai"
-  schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
-  command = "python3 core/tasks/enrich_products_ai.py enrich_products_ai"
-[[cron]]
-  name = "flag_products_to_create"
-  schedule = "0 5 * * *"
-  command = "python3 core/tasks/flag_products_to_create.py flag_products_to_create"
-[[cron]]
-  name = "flag_products_to_create"
-  schedule = "0 6 * * *"
-  command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"
-[[cron]]
-  name = "create_products_on_shopify"
-  schedule = "0 6 * * *"
-  command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"
-[[cron]]
-  name = "update_supplier_data"
-  schedule = "0 6 * * *"
-  command = "python3 core/tasks/update_supplier_data.py update_supplier_data"
-[[cron]]
-  name = "update_products_on_shopify"
-  schedule = "0 6 * * *"
-  command = "python3 core/tasks/update_products_on_shopify.py update_products_on_shopify"
+[env]
+  PYTHONUNBUFFERED = "1"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false   # ← keep machine always running
+  auto_start_machines = true
+  min_machines_running = 1     # ← ensure at least one is always running
+
+#[build]
+#  image = 'python:3.11'
+#
+##[deploy]
+##  release_command = "python -m scripts.init_indexes "
+#
+#[build]
+#
+#[env]
+#  PYTHONUNBUFFERED = "1"
+#
+#[http_service]
+#  internal_port = 8080
+#  force_https = true
+#  auto_stop_machines = true
+#  auto_start_machines = true
+#  min_machines_running = 0
+
+#[[cron]]
+#  name = "prune_old_logs"
+#  schedule = "0 0 * * *"  # Runs every day at midnight UTC
+#  command = "python3 core/tasks/prune_old_logs.py prune_old_logs"
+#[[cron]]
+#  name = "discover_new_products"
+#  schedule = "0 6 * * *"  # every day at 6:00 AM UTC
+#  command = "python3 core/tasks/discover_new_products.py discover_new_products"
+#[[cron]]
+#  name = "enrich_products_barcode_lookup"
+#  schedule = "0 7 * * *"  # Every day at 7:00 AM UTC
+#  command = "python3 core/tasks/enrich_products_barcode_lookup.py enrich_products_barcode_lookup"
+#[[cron]]
+#  name = "enrich_products_images"
+#  schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
+#  command = "python3 core/tasks/enrich_products_images.py enrich_products_images"
+#[[cron]]
+#  name = "enrich_products_ai"
+#  schedule = "0 8 * * *"  # Runs every day at 8:00 AM UTC
+#  command = "python3 core/tasks/enrich_products_ai.py enrich_products_ai"
+#[[cron]]
+#  name = "flag_products_to_create"
+#  schedule = "0 5 * * *"
+#  command = "python3 core/tasks/flag_products_to_create.py flag_products_to_create"
+#[[cron]]
+#  name = "create_products_on_shopify"
+#  schedule = "0 6 * * *"
+#  command = "python3 core/tasks/create_products_on_shopify.py create_products_on_shopify"
+#[[cron]]
+#  name = "update_supplier_data"
+#  schedule = "0 6 * * *"
+#  command = "python3 core/tasks/update_supplier_data.py update_supplier_data"
+#[[cron]]
+#  name = "update_products_on_shopify"
+#  schedule = "0 6 * * *"
+#  command = "python3 core/tasks/update_products_on_shopify.py update_products_on_shopify"
